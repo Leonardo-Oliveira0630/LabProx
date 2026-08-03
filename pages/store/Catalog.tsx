@@ -1,0 +1,1558 @@
+
+import React, { useState, useMemo, useEffect } from 'react';
+import { useApp } from '../../context/AppContext';
+import { 
+    Plus, Search, ShoppingBag, BadgePercent, Package, X, Building, Tag, Store, 
+    ChevronLeft, ChevronRight, Star, ImageIcon, MessageSquare, 
+    LayoutGrid, List, Heart, ExternalLink, Info, Loader2, ChevronDown, Handshake, Shield, Lock, CheckCircle, MapPin, ShoppingCart, Share2, Copy
+} from 'lucide-react';
+import { JobType, VariationGroup, CartItem, LabRating, BannerConfig } from '../../types';
+import { useNavigate, useParams, useLocation, Link } from 'react-router-dom';
+import { FeatureLocked } from '../../components/FeatureLocked';
+import { StoreTopMenu } from '../../components/StoreTopMenu';
+import { Odontogram } from '../../components/Odontogram';
+import { motion, AnimatePresence } from 'motion/react';
+import * as api from '../../services/firebaseService';
+
+import { Cart } from './Cart';
+import { JobsList } from '../JobsList';
+import { Partnerships } from '../dentist/Partnerships';
+import { MyVouchersTab } from './MyVouchersTab';
+
+// --- Components ---
+
+const BannerCarousel = ({ images }: { images: BannerConfig[] }) => {
+    const [index, setIndex] = useState(0);
+    const [direction, setDirection] = useState(1); // 1 for next/right, -1 for prev/left
+
+    useEffect(() => {
+        if (images.length <= 1) return;
+        const timer = setInterval(() => {
+            setDirection(1);
+            setIndex((prev) => (prev + 1) % images.length);
+        }, 8000); // 8000ms as requested (slower auto-slide)
+        return () => clearInterval(timer);
+    }, [images]);
+
+    if (!images || images.length === 0) {
+        return (
+            <div className="w-full aspect-[21/9] md:aspect-[25/7] bg-gradient-to-r from-[#0F4C81] to-[#00B8D9] rounded-card p-8 flex items-center justify-between text-white overflow-hidden relative shadow-premium">
+                <div className="z-10 animate-in slide-in-from-left duration-700">
+                    <h1 className="text-3xl md:text-5xl font-black mb-4 tracking-tighter col-span-1 border-none outline-none">Catálogo Digital</h1>
+                    <p className="text-slate-100 text-lg font-medium max-w-md opacity-90">Qualidade e precisão para seus casos clínicos.</p>
+                </div>
+                <ShoppingBag size={180} className="absolute -right-10 -bottom-10 text-white/10 rotate-12 pointer-events-none" />
+            </div>
+        );
+    }
+
+    const currentBanner = images[index];
+    const hasAnyText = currentBanner.title || currentBanner.subtitle || currentBanner.buttonText;
+
+    // Transition variants for lateral slide
+    const slideVariants = {
+        enter: (dir: number) => ({
+            x: dir > 0 ? '100%' : '-100%',
+            opacity: 0
+        }),
+        center: {
+            x: 0,
+            opacity: 1
+        },
+        exit: (dir: number) => ({
+            x: dir < 0 ? '100%' : '-100%',
+            opacity: 0
+        })
+    };
+
+    const handlePrev = () => {
+        setDirection(-1);
+        setIndex((prev) => (prev - 1 + images.length) % images.length);
+    };
+
+    const handleNext = () => {
+        setDirection(1);
+        setIndex((prev) => (prev + 1) % images.length);
+    };
+
+    const handleDotClick = (i: number) => {
+        setDirection(i > index ? 1 : -1);
+        setIndex(i);
+    };
+
+    return (
+        <div className="relative w-full aspect-[21/9] md:aspect-[25/7] rounded-card overflow-hidden shadow-premium group">
+            <AnimatePresence initial={false} custom={direction} mode="popLayout">
+                <motion.img
+                    key={index}
+                    src={currentBanner.imageUrl}
+                    custom={direction}
+                    variants={slideVariants}
+                    initial="enter"
+                    animate="center"
+                    exit="exit"
+                    transition={{
+                        x: { type: "spring", stiffness: 180, damping: 25 },
+                        opacity: { duration: 0.5 }
+                    }}
+                    className="absolute inset-0 w-full h-full object-cover"
+                />
+            </AnimatePresence>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-black/20" />
+            
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-6 md:p-12 text-white z-10">
+                {hasAnyText && (
+                    <motion.div 
+                        key={index}
+                        custom={direction}
+                        variants={slideVariants}
+                        initial="enter"
+                        animate="center"
+                        exit="exit"
+                        transition={{ 
+                            x: { type: "spring", stiffness: 150, damping: 24 },
+                            opacity: { duration: 0.5 },
+                            delay: 0.1
+                        }}
+                        className="max-w-2xl flex flex-col items-center justify-center gap-2 text-center"
+                    >
+                        {currentBanner.title && (
+                            <h2 className="text-2xl md:text-5xl font-black tracking-tighter drop-shadow-lg leading-tight uppercase">
+                                {currentBanner.title}
+                            </h2>
+                        )}
+                        {currentBanner.subtitle && (
+                            <p className="text-sm md:text-lg text-slate-150 font-medium drop-shadow-md mt-1 line-clamp-2 max-w-xl">
+                                {currentBanner.subtitle}
+                            </p>
+                        )}
+                        {currentBanner.buttonText && (
+                            <button 
+                                onClick={() => {
+                                    const link = currentBanner.buttonLink;
+                                    if (link) {
+                                        if (link.startsWith('http://') || link.startsWith('https://')) {
+                                            window.open(link, '_blank');
+                                        } else {
+                                            window.location.href = link;
+                                        }
+                                    }
+                                }}
+                                className="mt-4 px-6 py-2.5 bg-[#00B8D9] hover:bg-[#00B8D9]/90 text-[#1E293B] font-black rounded-full transition-all text-xs uppercase tracking-wider w-fit shadow-lg hover:scale-105 active:scale-95"
+                            >
+                                {currentBanner.buttonText}
+                            </button>
+                        )}
+                    </motion.div>
+                )}
+            </div>
+
+            {images.length > 1 && (
+                <>
+                    <button onClick={handlePrev} 
+                            className="absolute left-4 top-1/2 -translate-y-1/2 p-2 bg-white/20 backdrop-blur-md rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/40 z-20">
+                        <ChevronLeft size={24} />
+                    </button>
+                    <button onClick={handleNext}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 p-2 bg-white/20 backdrop-blur-md rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/40 z-20">
+                        <ChevronRight size={24} />
+                    </button>
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-2 z-20">
+                        {images.map((_, i) => (
+                            <button key={i} onClick={() => handleDotClick(i)} className={`w-2 h-2 rounded-full transition-all ${i === index ? 'bg-white w-6' : 'bg-white/40'}`} />
+                        ))}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+};
+
+const PortfolioSection = ({ portfolio }: { portfolio: any[] }) => {
+    const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
+    const handlePrev = (e?: React.MouseEvent) => {
+        e?.stopPropagation();
+        if (selectedIdx === null) return;
+        setSelectedIdx((prev) => (prev! === 0 ? portfolio.length - 1 : prev! - 1));
+    };
+
+    const handleNext = (e?: React.MouseEvent) => {
+        e?.stopPropagation();
+        if (selectedIdx === null) return;
+        setSelectedIdx((prev) => (prev! === portfolio.length - 1 ? 0 : prev! + 1));
+    };
+
+    const handleDragEnd = (event: any, info: any) => {
+        const threshold = 50;
+        if (info.offset.x < -threshold) {
+            handleNext();
+        } else if (info.offset.x > threshold) {
+            handlePrev();
+        }
+    };
+
+    useEffect(() => {
+        if (selectedIdx === null) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft') handlePrev();
+            if (e.key === 'ArrowRight') handleNext();
+            if (e.key === 'Escape') setSelectedIdx(null);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [selectedIdx]);
+
+    if (!portfolio || portfolio.length === 0) {
+        return (
+            <div className="py-20 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                <ImageIcon size={48} className="mx-auto text-slate-300 mb-4" />
+                <h3 className="text-xl font-bold text-slate-600">Nenhum trabalho no portfólio ainda</h3>
+                <p className="text-slate-400">Em breve mostraremos fotos de casos reais aqui.</p>
+            </div>
+        );
+    }
+
+    return (
+        <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 animate-in fade-in zoom-in duration-500">
+                {portfolio.map((item, i) => (
+                    <motion.div 
+                        key={item.id} 
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        onClick={() => setSelectedIdx(i)}
+                        className="group bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer"
+                    >
+                        <div className="aspect-square overflow-hidden relative">
+                            <img src={item.imageUrl} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                 <ExternalLink className="text-white animate-in zoom-in-50 duration-300" size={32} />
+                            </div>
+                        </div>
+                        <div className="p-6">
+                            <h4 className="font-black text-slate-800 text-lg mb-2">{item.title}</h4>
+                            <p className="text-slate-500 text-sm leading-relaxed">{item.description}</p>
+                        </div>
+                    </motion.div>
+                ))}
+            </div>
+
+            {/* Lightbox / Slideshow Modal */}
+            <AnimatePresence>
+                {selectedIdx !== null && (
+                    <motion.div 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={() => setSelectedIdx(null)}
+                        className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-md flex flex-col items-center justify-center p-4 md:p-8 select-none"
+                    >
+                        {/* Top action bar */}
+                        <div className="absolute top-6 left-6 right-6 flex items-center justify-between text-white z-10">
+                            <span className="font-mono text-xs bg-white/10 px-3 py-1.5 rounded-full backdrop-blur-sm">
+                                {selectedIdx + 1} de {portfolio.length}
+                            </span>
+                            <button 
+                                onClick={() => setSelectedIdx(null)}
+                                className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-all active:scale-95 cursor-pointer"
+                            >
+                                <X size={24} />
+                            </button>
+                        </div>
+
+                        {/* Main viewer container */}
+                        <div className="relative w-full max-w-4xl h-[70vh] flex items-center justify-center">
+                            {/* Left Arrow (Desktop Only) */}
+                            <button 
+                                onClick={handlePrev}
+                                className="absolute left-2 md:-left-20 z-20 p-4 bg-white/10 hover:bg-white/25 rounded-full text-white transition-all active:scale-90 hidden sm:flex items-center justify-center cursor-pointer border border-white/5"
+                            >
+                                <ChevronLeft size={28} />
+                            </button>
+
+                            {/* Drag image container */}
+                            <motion.div
+                                key={selectedIdx}
+                                drag="x"
+                                dragConstraints={{ left: 0, right: 0 }}
+                                dragElastic={0.6}
+                                onDragEnd={handleDragEnd}
+                                initial={{ opacity: 0, scale: 0.95, x: 50 }}
+                                animate={{ opacity: 1, scale: 1, x: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, x: -50 }}
+                                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex flex-col items-center justify-center max-w-full max-h-full cursor-grab active:cursor-grabbing text-center"
+                            >
+                                <img 
+                                    src={portfolio[selectedIdx].imageUrl} 
+                                    alt={portfolio[selectedIdx].title || "Item do portfólio"} 
+                                    className="max-h-[50vh] md:max-h-[60vh] object-contain rounded-2xl shadow-2xl select-none pointer-events-none border border-white/10"
+                                />
+                                {portfolio[selectedIdx].title && (
+                                    <div className="mt-6 max-w-lg text-white">
+                                        <h4 className="font-black text-xl md:text-2xl tracking-tight">{portfolio[selectedIdx].title}</h4>
+                                        {portfolio[selectedIdx].description && (
+                                            <p className="text-slate-300 text-sm mt-2 leading-relaxed">{portfolio[selectedIdx].description}</p>
+                                        )}
+                                    </div>
+                                )}
+                            </motion.div>
+
+                            {/* Right Arrow (Desktop Only) */}
+                            <button 
+                                onClick={handleNext}
+                                className="absolute right-2 md:-right-20 z-20 p-4 bg-white/10 hover:bg-white/25 rounded-full text-white transition-all active:scale-90 hidden sm:flex items-center justify-center cursor-pointer border border-white/5"
+                            >
+                                <ChevronRight size={28} />
+                            </button>
+                        </div>
+
+                        {/* Swipe instructions (Mobile helper) */}
+                        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-center pointer-events-none">
+                            <p className="text-xs text-slate-400 font-medium tracking-wide">
+                                Deslize para o lado ou utilize as setas do teclado para navegar
+                            </p>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </>
+    );
+};
+
+const ReviewsSection = ({ labId }: { labId: string }) => {
+    const [reviews, setReviews] = useState<LabRating[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const unsub = api.subscribeLabRatings(labId, (r) => {
+            setReviews(r);
+            setLoading(false);
+        });
+        return unsub;
+    }, [labId]);
+
+    if (loading) return <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-indigo-600" /></div>;
+
+    if (reviews.length === 0) {
+        return (
+            <div className="py-20 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                <Star size={48} className="mx-auto text-slate-300 mb-4" />
+                <h3 className="text-xl font-bold text-slate-600">Sem avaliações recentes</h3>
+                <p className="text-slate-400">Seja o primeiro a avaliar este laboratório após seu pedido!</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            {reviews.map((row) => (
+                <div key={row.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex gap-6">
+                    <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center shrink-0 text-indigo-600 font-bold">
+                        {row.dentistName.charAt(0)}
+                    </div>
+                    <div className="flex-1">
+                        <div className="flex justify-between items-start mb-2">
+                            <div>
+                                <h4 className="font-bold text-slate-800">{row.dentistName}</h4>
+                                <div className="flex text-amber-400 mt-0.5">
+                                    {[...Array(5)].map((_, i) => <Star key={i} size={14} fill={i < row.score ? 'currentColor' : 'none'} />)}
+                                </div>
+                            </div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Recente</span>
+                        </div>
+                        <p className="text-slate-600 text-sm italic">"{row.comment}"</p>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+// Variation Configuration Modal (Component with Partner Checking)
+const VariationConfigModal = ({ product, selectedLab, onClose }: { product: JobType; selectedLab: import('../../types').Organization; onClose: () => void; }) => {
+    const { addToCart, currentUser, userConnections, addConnectionByCode } = useApp();
+    const [quantity, setQuantity] = useState(1);
+    const [selectedVariations, setSelectedVariations] = useState<Record<string, string | string[]>>({});
+    const [variationTextValues, setVariationTextValues] = useState<Record<string, string>>({}); 
+    const [selectedTeeth, setSelectedTeeth] = useState<string[]>([]);
+
+    // Soft-partnership checkout gate state
+    const [showPartnerModal, setShowPartnerModal] = useState(false);
+    const [isLinking, setIsLinking] = useState(false);
+    const [linkError, setLinkError] = useState('');
+
+    // Logic to calculate final price for a product based on user discounts
+    const calculateFinalUnitPrice = (type: JobType, selectedIds: string[]) => {
+        if (!currentUser) {
+            let total = type.basePrice;
+            selectedIds.forEach(id => {
+                type.variationGroups.forEach(g => {
+                    const opt = g.options.find(o => o.id === id);
+                    if (opt) total += opt.priceModifier;
+                });
+            });
+            return total;
+        }
+        
+        let discountableTotal = type.basePrice;
+        let exemptTotal = 0;
+
+        selectedIds.forEach(id => {
+            type.variationGroups.forEach(g => {
+                const opt = g.options.find(o => o.id === id);
+                if (opt) {
+                    if (opt.isDiscountExempt) exemptTotal += opt.priceModifier;
+                    else discountableTotal += opt.priceModifier;
+                }
+            });
+        });
+
+        let discountRate = 0; 
+        const custom = currentUser.customPrices?.find(p => p.jobTypeId === type.id);
+        if (custom) {
+            if (custom.discountPercent !== undefined) discountRate = custom.discountPercent / 100;
+            else if (custom.price !== undefined) {
+                discountableTotal = custom.price;
+                discountRate = 0; 
+            }
+        } else if (currentUser.globalDiscountPercent) {
+            discountRate = currentUser.globalDiscountPercent / 100;
+        }
+
+        const discountedSum = discountableTotal * (1 - discountRate);
+        return discountedSum + exemptTotal;
+    };
+
+    const unitPrice = useMemo(() => {
+        const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+        return calculateFinalUnitPrice(product, allSelectedOptionIds);
+    }, [selectedVariations, product, currentUser]);
+
+    const finalPrice = unitPrice * quantity;
+
+    const disabledOptions = useMemo(() => {
+        const disabled = new Set<string>();
+        const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+        allSelectedOptionIds.forEach(selectedId => {
+            product.variationGroups.forEach(group => {
+                const option = group.options.find(opt => opt.id === selectedId);
+                if (option?.disablesOptions) {
+                    option.disablesOptions.forEach(idToDisable => disabled.add(idToDisable));
+                }
+            });
+        });
+        return disabled;
+    }, [selectedVariations, product]);
+
+    useEffect(() => {
+        if (disabledOptions.size === 0) return;
+        const newSelections = JSON.parse(JSON.stringify(selectedVariations));
+        let changed = false;
+        for (const groupId in newSelections) {
+            if (Array.isArray(newSelections[groupId])) {
+                const valid = newSelections[groupId].filter((id: string) => !disabledOptions.has(id));
+                if (valid.length !== newSelections[groupId].length) {
+                    newSelections[groupId] = valid;
+                    changed = true;
+                }
+            } else if (disabledOptions.has(newSelections[groupId])) {
+                delete newSelections[groupId];
+                changed = true;
+            }
+        }
+        if (changed) setSelectedVariations(newSelections);
+    }, [disabledOptions, selectedVariations]);
+
+
+    const handleVariationChange = (group: VariationGroup, optionId: string) => {
+        setSelectedVariations(prev => {
+            const newSelections = { ...prev };
+            const current = newSelections[group.id];
+            if (group.selectionType === 'SINGLE') {
+                newSelections[group.id] = optionId;
+            } else {
+                const arr = Array.isArray(current) ? [...current] : [];
+                const idx = arr.indexOf(optionId);
+                if (idx > -1) arr.splice(idx, 1);
+                else arr.push(optionId);
+                newSelections[group.id] = arr;
+            }
+            return newSelections;
+        });
+    };
+
+    const handleTextVariationChange = (group: VariationGroup, optionId: string, value: string) => {
+        setVariationTextValues(prev => ({ ...prev, [optionId]: value }));
+        setSelectedVariations(prev => {
+            const newSelections = { ...prev };
+            const current = (newSelections[group.id] as string[]) || [];
+            if (value.trim().length > 0) {
+                if (!current.includes(optionId)) newSelections[group.id] = [...current, optionId];
+            } else {
+                newSelections[group.id] = current.filter(id => id !== optionId);
+            }
+            return newSelections;
+        });
+    };
+
+    const handleAddToCart = () => {
+        // Guard check: is the dentist partnered with the lab?
+        const isConnected = userConnections.some(c => c.organizationId === selectedLab.id);
+        if (!isConnected) {
+            setShowPartnerModal(true);
+            return;
+        }
+
+        const newItem: CartItem = {
+            cartItemId: `cart_${Date.now()}`,
+            jobType: product,
+            quantity,
+            unitPrice,
+            finalPrice,
+            selectedVariationIds: Object.values(selectedVariations).flat() as string[],
+            variationValues: variationTextValues,
+            selectedTeeth: selectedTeeth.length > 0 ? selectedTeeth : undefined
+        };
+        addToCart(newItem);
+        onClose();
+    };
+
+    const handleLinkAndAddToCart = async () => {
+        setIsLinking(true);
+        setLinkError('');
+        try {
+            // Establish the partnership connection automatically
+            await addConnectionByCode(selectedLab.id);
+            
+            // Add item to cart and dismiss
+            const newItem: CartItem = {
+                cartItemId: `cart_${Date.now()}`,
+                jobType: product,
+                quantity,
+                unitPrice,
+                finalPrice,
+                selectedVariationIds: Object.values(selectedVariations).flat() as string[],
+                variationValues: variationTextValues,
+                selectedTeeth: selectedTeeth.length > 0 ? selectedTeeth : undefined
+            };
+            addToCart(newItem);
+            setShowPartnerModal(false);
+            onClose();
+        } catch (err: any) {
+            setLinkError(err.message || 'Ocorreu um erro ao firmar parceria automática. Tente novamente mais tarde.');
+        } finally {
+            setIsLinking(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-in fade-in duration-300">
+            <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="bg-white rounded-[32px] shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden relative"
+                id="variation-modal-box"
+            >
+                {/* PARTNERSHIP PROMPT OVERLAY */}
+                {showPartnerModal && (
+                    <div className="absolute inset-0 z-50 bg-slate-900/85 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+                        <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl text-center space-y-6 animate-in zoom-in-95 duration-200">
+                            <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto">
+                                <Handshake size={32} />
+                            </div>
+                            <div>
+                                <h3 className="text-2xl font-black text-slate-900 tracking-tighter">Firmar Parceria?</h3>
+                                <p className="text-slate-500 font-medium text-sm mt-2 leading-relaxed">
+                                    Para adicionar <span className="font-bold text-slate-800">{product.name}</span> ao carrinho e enviar pedidos, é preciso estar vinculado a <span className="font-bold text-slate-800">{selectedLab.name}</span>. Deseja realizar essa vinculação agora?
+                                </p>
+                            </div>
+
+                            {linkError && (
+                                <div className="p-3 bg-red-50 text-red-600 text-xs rounded-xl border border-red-100 font-medium text-left">
+                                    {linkError}
+                                </div>
+                            )}
+
+                            <div className="grid grid-cols-2 gap-3 pt-2">
+                                <button 
+                                    onClick={handleLinkAndAddToCart}
+                                    disabled={isLinking}
+                                    className="px-5 py-4 bg-blue-600 text-white font-black rounded-2xl hover:bg-blue-700 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-blue-100 disabled:opacity-50"
+                                >
+                                    {isLinking ? <Loader2 className="animate-spin" size={16} /> : "Sim, Vincular"}
+                                </button>
+                                <button 
+                                    onClick={() => setShowPartnerModal(false)}
+                                    disabled={isLinking}
+                                    className="px-5 py-4 bg-slate-100 text-slate-800 font-black rounded-2xl hover:bg-slate-200 transition-all text-xs uppercase tracking-wider"
+                                >
+                                    Cancelar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex justify-between items-center p-6 border-b border-slate-100">
+                    <div>
+                        <h3 className="font-black text-2xl text-slate-900 tracking-tighter">{product.name}</h3>
+                        <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-1">Configuração Personalizada</p>
+                    </div>
+                    <button onClick={onClose} className="p-2 bg-slate-50 text-slate-400 hover:text-slate-900 rounded-full transition-colors"><X size={24} /></button>
+                </div>
+                <div className="p-6 md:p-8 overflow-y-auto space-y-6 bg-slate-50/30">
+                    {product.variationGroups.map(group => (
+                        <div key={group.id} className="p-5 rounded-3xl border bg-white border-slate-100 shadow-sm">
+                            <div className="flex justify-between items-center mb-4">
+                                <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                                    <Tag className="text-indigo-500" size={16} /> {group.name}
+                                </h4>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
+                                    {group.selectionType === 'SINGLE' ? 'Tipo Único' : group.selectionType === 'MULTIPLE' ? 'Combo' : 'Mensagem'}
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {group.options.map(option => {
+                                    const isDisabled = disabledOptions.has(option.id);
+                                    if (group.selectionType === 'TEXT') {
+                                        return (
+                                            <div key={option.id} className={`col-span-2 p-3 rounded-2xl bg-slate-50 border border-slate-200 ${isDisabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                <div className="flex justify-between mb-2">
+                                                    <label className="text-xs font-bold text-slate-600">{option.name}</label>
+                                                    <span className="text-[10px] font-black text-indigo-600">{option.priceModifier > 0 ? `+ R$ ${option.priceModifier.toFixed(2)}` : ''}</span>
+                                                </div>
+                                                <input type="text" disabled={isDisabled} value={variationTextValues[option.id] || ''} onChange={e => handleTextVariationChange(group, option.id, e.target.value)}
+                                                    className="w-full px-4 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-medium" placeholder="Ex: Cor A2..." />
+                                            </div>
+                                        )
+                                    }
+
+                                    const isSelected = group.selectionType === 'SINGLE'
+                                        ? selectedVariations[group.id] === option.id
+                                        : (selectedVariations[group.id] as string[])?.includes(option.id);
+                                    return (
+                                        <button key={option.id} onClick={() => !isDisabled && handleVariationChange(group, option.id)}
+                                            className={`p-4 rounded-2xl flex flex-col items-start gap-1 text-sm transition-all border-2 ${isDisabled ? 'cursor-not-allowed opacity-40 grayscale' : 'cursor-pointer'} ${isSelected ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100' : 'bg-white border-slate-100 hover:border-indigo-300 text-slate-600'}`}>
+                                            <div className="flex justify-between items-center w-full">
+                                                <span className={`font-black uppercase text-[10px] tracking-widest ${isSelected ? 'text-indigo-100' : 'text-slate-400'}`}>Opção</span>
+                                                {option.priceModifier > 0 && <span className={`font-bold text-[10px] ${isSelected ? 'text-white' : 'text-indigo-600'}`}>+ R$ {option.priceModifier.toFixed(2)}</span>}
+                                            </div>
+                                            <span className="font-bold text-left leading-tight">{option.name}</span>
+                                            {option.isDiscountExempt && <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded mt-1 ${isSelected ? 'bg-white/20 text-white' : 'bg-orange-50 text-orange-500'}`}>Fixo</span>}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ))}
+                    
+                    <div className="pt-2 pb-4">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 block">Dentes Relacionados (Opcional)</label>
+                        <div className="bg-slate-50 border border-slate-100 rounded-3xl p-6 flex justify-center items-center overflow-hidden">
+                            <Odontogram 
+                                selectedTeeth={selectedTeeth}
+                                onChange={(teeth) => {
+                                    setSelectedTeeth(teeth);
+                                    if (teeth.length > 0) {
+                                        setQuantity(teeth.length);
+                                    } else {
+                                        setQuantity(1);
+                                    }
+                                }}
+                                className="w-full max-w-[260px] sm:max-w-[320px] md:max-w-[400px] h-auto"
+                            />
+                        </div>
+                        {selectedTeeth.length > 0 && (
+                            <p className="text-xs text-indigo-600 font-bold mt-3">
+                                Dentes selecionados: {selectedTeeth.sort().join(', ')}
+                            </p>
+                        )}
+                    </div>
+                </div>
+                <div className="p-8 bg-white border-t border-slate-100 flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex items-center gap-6 w-full md:w-auto">
+                        <div className="flex items-center gap-3">
+                            <label className="text-xs font-black uppercase tracking-widest text-slate-400">Qtd:</label>
+                            <div className={`flex bg-slate-100 p-1 rounded-xl ${selectedTeeth.length > 0 ? 'opacity-50 pointer-events-none' : ''}`}>
+                                <button onClick={() => setQuantity(q => Math.max(1, q-1))} className="w-8 h-8 flex items-center justify-center font-bold text-slate-600 hover:text-indigo-600 hover:bg-white rounded-lg transition-all" disabled={selectedTeeth.length > 0}>-</button>
+                                <input type="number" readOnly value={quantity} className="w-10 bg-transparent text-center font-black text-slate-800 pointer-events-none" />
+                                <button onClick={() => setQuantity(q => q+1)} className="w-8 h-8 flex items-center justify-center font-bold text-slate-600 hover:text-indigo-600 hover:bg-white rounded-lg transition-all" disabled={selectedTeeth.length > 0}>+</button>
+                            </div>
+                        </div>
+                        <div className="h-10 w-[1px] bg-slate-100 hidden md:block" />
+                        <div>
+                             <span className="text-[10px] text-slate-400 uppercase font-black tracking-widest block">Total estimado</span>
+                             <p className="font-black text-2xl text-indigo-700 tracking-tighter">R$ {finalPrice.toFixed(2)}</p>
+                        </div>
+                    </div>
+                    <button onClick={handleAddToCart}
+                        className="w-full md:w-auto px-10 py-5 bg-indigo-600 text-white font-black rounded-[20px] hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all active:scale-95 text-lg">
+                        Adicionar ao Carrinho
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    );
+};
+
+// --- Main Component ---
+
+export const Catalog = () => {
+    const { slug } = useParams<{ slug: string }>();
+    const { allLaboratories, allSuppliers, currentUser, currentOrg, activeOrganization, currentPlan, userConnections, addConnectionByCode, cart, switchActiveOrganization } = useApp();
+    const navigate = useNavigate();
+    const location = useLocation();
+    const [term, setTerm] = useState('');
+    const [mainTab, setMainTab] = useState<'STORE' | 'PARTNERSHIPS' | 'MY_ORDERS' | 'CART' | 'VOUCHERS'>(() => {
+        const searchParams = new URLSearchParams(location.search);
+        const tab = searchParams.get('tab');
+        if (tab === 'vouchers') return 'VOUCHERS';
+        if (tab === 'my_orders') return 'MY_ORDERS';
+        return 'STORE';
+    });
+
+    useEffect(() => {
+        const searchParams = new URLSearchParams(location.search);
+        const tab = searchParams.get('tab');
+        if (tab === 'vouchers') {
+            setMainTab('VOUCHERS');
+        } else if (tab === 'my_orders') {
+            setMainTab('MY_ORDERS');
+        }
+    }, [location.search]);
+    const [selectedCategory, setSelectedCategory] = useState('ALL');
+    const [configuringProduct, setConfiguringProduct] = useState<JobType | null>(null);
+    const [activeTab, setActiveTab] = useState<'PRODUCTS' | 'PROMOTIONS' | 'PORTFOLIO' | 'REVIEWS' | 'ABOUT'>('PRODUCTS');
+    const [localJobTypes, setLocalJobTypes] = useState<JobType[]>([]);
+    const [loadingProducts, setLoadingProducts] = useState(false);
+    const [showAuthModal, setShowAuthModal] = useState(false);
+    const [copiedServiceId, setCopiedServiceId] = useState<string | null>(null);
+
+    const handleShareProduct = (productId: string) => {
+        const slugOrId = selectedLab?.storeSlug || selectedLab?.id;
+        if (!slugOrId) return;
+        const shareUrl = `${window.location.origin}/store/${slugOrId}?serviceId=${productId}`;
+        navigator.clipboard.writeText(shareUrl)
+            .then(() => {
+                setCopiedServiceId(productId);
+                setTimeout(() => setCopiedServiceId(null), 2000);
+            })
+            .catch((err) => {
+                console.error("Erro ao copiar link:", err);
+            });
+    };
+
+    // Dynamic Connection states
+    const [connecting, setConnecting] = useState(false);
+    const [connectionMsg, setConnectionMsg] = useState('');
+    const [connectionErr, setConnectionErr] = useState('');
+
+    const [fetchedLab, setFetchedLab] = useState<import('../../types').Organization | null>(null);
+    const [isLoadingLab, setIsLoadingLab] = useState(!!slug);
+
+    useEffect(() => {
+        if (!slug) {
+            setFetchedLab(null);
+            setIsLoadingLab(false);
+            return;
+        }
+
+        let isMounted = true;
+        setIsLoadingLab(true);
+
+        api.getOrganizationBySlug(slug)
+            .then(lab => {
+                if (isMounted) {
+                    setFetchedLab(lab);
+                    setIsLoadingLab(false);
+                }
+            })
+            .catch(err => {
+                console.error("Erro ao obter laboratório por slug:", err);
+                if (isMounted) {
+                    setIsLoadingLab(false);
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, [slug]);
+
+    const selectedLab = useMemo(() => {
+        if (slug) {
+            return fetchedLab || allLaboratories.find(l => l.storeSlug === slug || l.id === slug) || allSuppliers?.find(s => s.storeSlug === slug || s.id === slug) || null;
+        }
+        return activeOrganization;
+    }, [slug, fetchedLab, allLaboratories, allSuppliers, activeOrganization]);
+
+    useEffect(() => {
+        if (!selectedLab?.id) {
+            setLocalJobTypes([]);
+            setLoadingProducts(false);
+            return;
+        }
+        setLoadingProducts(true);
+        if (selectedLab.orgType === 'SUPPLIER') {
+            const unsub = api.subscribeInventoryItems(selectedLab.id, (items) => {
+                const mapped: JobType[] = items.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    category: item.type || 'MATERIAL',
+                    basePrice: item.sellPrice || 0,
+                    variationGroups: item.variationGroups || [],
+                    isVisibleInStore: item.isVisibleInStore !== false,
+                    imageUrl: item.imageUrl || '',
+                    description: item.description || ''
+                } as any));
+                setLocalJobTypes(mapped);
+                setLoadingProducts(false);
+            });
+            return unsub;
+        } else {
+            const unsub = api.subscribeJobTypes(selectedLab.id, (types) => {
+                setLocalJobTypes(types);
+                setLoadingProducts(false);
+            });
+            return unsub;
+        }
+    }, [selectedLab?.id, selectedLab?.orgType]);
+
+    const isGuest = !currentUser;
+    const isPriceVisible = !isGuest || (selectedLab?.storeVisibility !== 'PRIVATE');
+
+    // Auto-trigger product configuration if serviceId query parameter is present
+    useEffect(() => {
+        if (localJobTypes.length > 0) {
+            const searchParams = new URLSearchParams(location.search);
+            const serviceId = searchParams.get('serviceId');
+            if (serviceId) {
+                const product = localJobTypes.find(jt => jt.id === serviceId);
+                if (product) {
+                    if (isGuest) {
+                        setShowAuthModal(true);
+                    } else {
+                        setConfiguringProduct(product);
+                    }
+                }
+            }
+        }
+    }, [localJobTypes, location.search, isGuest]);
+
+    // Callback to link partnership directly in storefront
+    const handleDirectLink = async () => {
+        if (!selectedLab) return;
+        setConnecting(true);
+        setConnectionErr('');
+        setConnectionMsg('');
+        try {
+            await addConnectionByCode(selectedLab.id);
+            setConnectionMsg('Parceria vinculada com sucesso!');
+            setTimeout(() => setConnectionMsg(''), 4000);
+        } catch (e: any) {
+            setConnectionErr(e.message || 'Erro ao firmar parceria com o laboratório.');
+        } finally {
+            setConnecting(false);
+        }
+    };
+
+    if (isLoadingLab) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[60vh] text-center p-8">
+                <Loader2 className="animate-spin text-indigo-600 mb-4" size={48} />
+                <p className="text-slate-500 font-bold text-sm">Carregando loja do laboratório...</p>
+            </div>
+        );
+    }
+
+    if (slug && !selectedLab) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[60vh] text-center p-8">
+                <div className="bg-white p-10 rounded-[32px] shadow-sm border border-slate-100 max-w-md w-full flex flex-col items-center">
+                    <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-6 text-slate-300">
+                        <Building size={40} />
+                    </div>
+                    <h2 className="text-2xl font-black text-slate-900 mb-3 tracking-tighter">Laboratório não encontrado</h2>
+                    <p className="text-slate-500 mb-8 font-medium">
+                        O laboratório solicitado por essa URL não existe ou ainda não configurou seu link de compartilhamento.
+                    </p>
+                    <button onClick={() => navigate('/dentist/partnerships')}
+                        className="px-10 py-4 bg-indigo-600 text-white font-black rounded-2xl hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all w-full animate-pulse">
+                        EXPLORAR LABORATÓRIOS
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    if (selectedLab && currentPlan && !currentPlan.features.hasStoreModule && !slug) {
+        return (
+            <FeatureLocked 
+                title="Módulo de Loja Bloqueado" 
+                message={`O laboratório ${selectedLab.name} não possui o módulo de Loja Virtual habilitado no plano atual.`} 
+            />
+        );
+    }
+
+    const storeSettings = selectedLab?.storeSettings || {
+        banners: [],
+        layoutType: 'CARDS',
+        portfolio: [],
+        menuOptions: ['PRODUCTS', 'PORTFOLIO', 'REVIEWS']
+    };
+
+    const isOutsourcingStore = currentOrg?.orgType === 'LAB' || currentOrg?.orgType === 'LAB_OUTSOURCED';
+    const visibleProducts = localJobTypes.filter(t => {
+        if (isOutsourcingStore) {
+            return t.isVisibleInOutsourcing !== false;
+        } else {
+            return t.isVisibleInStore !== false;
+        }
+    });
+    const categories = Array.from(new Set(visibleProducts.map(t => t.category)));
+
+    const isPromo = (jt: any) => {
+        if (jt.isPromotion === true) return true;
+        if (jt.isPromotion === false) return false;
+        return jt.isPromotion || !!jt.originalJobTypeId || !!jt.promotionQuantity || jt.isVoucherCombo === true;
+    };
+    
+    const visiblePromos = localJobTypes.filter(jt => {
+        if (!isPromo(jt)) return false;
+        if (isOutsourcingStore) {
+            return jt.isVisibleInOutsourcing !== false;
+        } else {
+            return jt.isVisibleInStore !== false;
+        }
+    });
+
+    const products = visibleProducts.filter(t => {
+        if (isPromo(t)) return false;
+        const termLower = term.toLowerCase();
+        const matchesTerm = t.name.toLowerCase().includes(termLower) || t.category.toLowerCase().includes(termLower);
+        const matchesCat = selectedCategory === 'ALL' || t.category === selectedCategory;
+        return matchesTerm && matchesCat;
+    });
+
+    const getPrice = (type: JobType) => {
+        if (!currentUser) return { price: type.basePrice, isCustom: false };
+        const custom = currentUser.customPrices?.find(c => c.jobTypeId === type.id);
+        if (custom) {
+            if (custom.price !== undefined) return { price: custom.price, isCustom: true };
+            if (custom.discountPercent !== undefined) return { price: type.basePrice * (1 - custom.discountPercent / 100), isCustom: true };
+        }
+        if (currentUser.globalDiscountPercent) return { price: type.basePrice * (1 - currentUser.globalDiscountPercent / 100), isCustom: true };
+        return { price: type.basePrice, isCustom: false };
+    };
+
+    const handleConfigureProduct = (product: JobType) => {
+        if (isGuest) {
+            setShowAuthModal(true);
+        } else {
+            setConfiguringProduct(product);
+        }
+    };
+
+    const isLinked = selectedLab ? userConnections.some(c => c.organizationId === selectedLab.id) : false;
+
+    return (
+        <div className="flex flex-col h-full bg-slate-50 relative">
+            <div className="flex items-center md:justify-between p-4 bg-white border-b border-gray-200 sticky top-0 z-30 shrink-0 overflow-x-auto gap-4 scrollbar-hide w-full">
+                <div className="hidden md:block w-auto md:w-32 flex-shrink-0"></div>
+                <div className="flex items-center justify-start md:justify-center flex-nowrap gap-2 md:gap-6 whitespace-nowrap md:flex-1">
+                    <button
+                        onClick={() => setMainTab('STORE')}
+                        className={`px-4 py-2 rounded-xl font-bold text-sm md:text-base transition-colors ${mainTab === 'STORE' ? 'bg-[#15263f] text-white' : 'text-slate-600 hover:bg-[#15263f] hover:text-white'}`}
+                    >
+                        Loja Online
+                    </button>
+                    <button
+                        onClick={() => setMainTab('PARTNERSHIPS')}
+                        className={`px-4 py-2 rounded-xl font-bold text-sm md:text-base transition-colors ${mainTab === 'PARTNERSHIPS' ? 'bg-[#15263f] text-white' : 'text-slate-600 hover:bg-[#15263f] hover:text-white'}`}
+                    >
+                        Parcerias Lab
+                    </button>
+                    <button
+                        onClick={() => setMainTab('MY_ORDERS')}
+                        className={`px-4 py-2 rounded-xl font-bold text-sm md:text-base transition-colors ${mainTab === 'MY_ORDERS' ? 'bg-[#15263f] text-white' : 'text-slate-600 hover:bg-[#15263f] hover:text-white'}`}
+                    >
+                        Meus Pedidos
+                    </button>
+                    <button
+                        onClick={() => setMainTab('VOUCHERS')}
+                        className={`px-4 py-2 rounded-xl font-bold text-sm md:text-base transition-colors ${mainTab === 'VOUCHERS' ? 'bg-[#15263f] text-white' : 'text-slate-600 hover:bg-[#15263f] hover:text-white'}`}
+                    >
+                        Vouchers
+                    </button>
+                </div>
+                <div className="flex items-center justify-end gap-4 w-auto flex-shrink-0">
+                    <button
+                        onClick={() => setMainTab('CART')}
+                        className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 font-bold rounded-xl transition-all shadow-md flex items-center gap-2 whitespace-nowrap"
+                    >
+                        <ShoppingCart className="w-5 h-5" />
+                        <span className="text-sm">Carrinho ({cart?.length || 0})</span>
+                    </button>
+                </div>
+            </div>
+
+            {mainTab === 'PARTNERSHIPS' && (
+                <div className="flex-1 overflow-y-auto bg-slate-50 animate-in fade-in">
+                    <Partnerships onSelectLab={(labId) => {
+                        switchActiveOrganization(labId);
+                        setMainTab('STORE');
+                    }} />
+                </div>
+            )}
+
+            {mainTab === 'MY_ORDERS' && (
+                <div className="flex-1 overflow-y-auto bg-slate-50 animate-in fade-in">
+                    <JobsList isStoreContext={true} />
+                </div>
+            )}
+
+            {mainTab === 'VOUCHERS' && (
+                <div className="flex-1 overflow-y-auto bg-slate-50 animate-in fade-in">
+                    <MyVouchersTab />
+                </div>
+            )}
+
+            {mainTab === 'CART' && (
+                <div className="flex-1 p-4 md:p-8 overflow-y-auto bg-slate-50 animate-in fade-in">
+                    <Cart onBackToStore={() => setMainTab('STORE')} />
+                </div>
+            )}
+
+            {mainTab === 'STORE' && (
+                !selectedLab ? (
+                    <div className="flex-1 flex flex-col items-center justify-center h-[60vh] text-center p-8 bg-slate-50 animate-in fade-in duration-500">
+                        <div className="bg-white p-10 rounded-[32px] shadow-sm border border-slate-100 max-w-md w-full flex flex-col items-center">
+                            <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-6 text-slate-300">
+                                <Building size={40} />
+                            </div>
+                            <h2 className="text-2xl font-black text-slate-900 mb-3 tracking-tighter">Ops! Laboratório ausente.</h2>
+                            <p className="text-slate-500 mb-8 font-medium">
+                                Parece que você ainda não selecionou qual laboratório deseja visitar hoje.
+                            </p>
+                            <button onClick={() => setMainTab('PARTNERSHIPS')}
+                                className="px-10 py-4 bg-indigo-600 text-white font-black rounded-2xl hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all w-full">
+                                EXPLORAR LABORATÓRIOS
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 p-4 md:p-8 space-y-8 pb-20 animate-in fade-in duration-500 overflow-y-auto">
+                {configuringProduct && <VariationConfigModal product={configuringProduct} selectedLab={selectedLab} onClose={() => setConfiguringProduct(null)} />}
+            
+            {showAuthModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-in fade-in duration-300">
+                    <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white p-8 rounded-[32px] max-w-md w-full shadow-2xl text-center space-y-6">
+                        <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto">
+                            <Shield size={32} />
+                        </div>
+                        <div>
+                            <h3 className="text-2xl font-black text-slate-900 tracking-tighter">Fazer Pedido ou Customizar</h3>
+                            <p className="text-slate-500 font-medium text-sm mt-2 leading-relaxed">
+                                Para poder escolher variações, aplicar cupons e enviar trabalhos ao laboratório, você precisa estar cadastrado e logado.
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 pt-2">
+                            <button 
+                                onClick={() => navigate(`/register-lab?redirect=${encodeURIComponent(location.pathname + location.search)}&type=DENTIST`)} 
+                                className="px-5 py-3.5 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all text-xs"
+                            >
+                                Criar Conta
+                            </button>
+                            <button 
+                                onClick={() => navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`)} 
+                                className="px-5 py-3.5 bg-slate-100 text-slate-800 font-bold rounded-2xl hover:bg-slate-200 transition-all text-xs"
+                            >
+                                Fazer Login
+                            </button>
+                        </div>
+                        <button 
+                            onClick={() => setShowAuthModal(false)}
+                            className="text-xs text-slate-400 hover:text-slate-600 font-bold underline"
+                        >
+                            Voltar ao Catálogo
+                        </button>
+                    </motion.div>
+                </div>
+            )}
+
+            {/* Back to Partnerships Link removed as requested */}
+
+            {/* Marketplace Laboratory Showcase Header */}
+            <div className="bg-white p-6 md:p-8 rounded-[32px] border border-slate-100 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-6" id="marketplace-profile-header">
+                <div className="flex items-center gap-5">
+                    <div className="w-20 h-20 bg-slate-50 border border-slate-100 rounded-3xl flex items-center justify-center overflow-hidden shrink-0 shadow-sm">
+                        {selectedLab.logoUrl ? (
+                            <img src={selectedLab.logoUrl} alt={selectedLab.name} className="w-full h-full object-containScale" />
+                        ) : (
+                            <Building size={36} className="text-slate-400" />
+                        )}
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                            <h1 className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight leading-tight">{selectedLab.name}</h1>
+                            {isLinked ? (
+                                <span className="text-[10px] bg-green-50 text-green-600 border border-green-200 font-black px-2.5 py-1 rounded-full uppercase tracking-widest flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> Parceiro Vinculado
+                                </span>
+                            ) : (
+                                <span className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 font-black px-2.5 py-1 rounded-full uppercase tracking-widest flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 bg-amber-500 rounded-full"></span> Sem Parceria Ativa
+                                </span>
+                            )}
+                        </div>
+                        
+                        <div className="flex items-center gap-4 mt-2 text-slate-500 text-xs flex-wrap font-bold">
+                            <div className="flex items-center gap-1 text-yellow-500 font-black">
+                                <Star fill="currentColor" size={14} className="fill-yellow-500" />
+                                {selectedLab.ratingAverage ? selectedLab.ratingAverage.toFixed(1) : "S/N"}
+                            </div>
+                            <span>•</span>
+                            <span className="font-semibold">{selectedLab.ratingCount || 0} Avaliações</span>
+                            <span>•</span>
+                            <span className="bg-slate-50 text-slate-600 px-2 py-0.5 rounded text-[10px] font-black font-mono">ID: {selectedLab.id}</span>
+                        </div>
+                    </div>
+                </div>
+
+                {!isLinked && (
+                    <div className="w-full md:w-auto relative" id="linking-action-button-area">
+                        {connectionMsg && (
+                            <div className="absolute bottom-full mb-2 right-0 bg-green-50 border border-green-200 text-green-700 text-xs py-2 px-4 rounded-xl font-medium shadow flex items-center gap-1 w-max">
+                                <CheckCircle size={14} /> {connectionMsg}
+                            </div>
+                        )}
+                        {connectionErr && (
+                            <div className="absolute bottom-full mb-2 right-0 bg-red-50 border border-red-200 text-red-700 text-xs py-2 px-4 rounded-xl font-medium shadow w-max">
+                                {connectionErr}
+                            </div>
+                        )}
+                        <button 
+                            onClick={handleDirectLink}
+                            disabled={connecting}
+                            className="w-full md:w-auto px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-2xl shadow-lg shadow-blue-100 transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
+                        >
+                            {connecting ? <Loader2 className="animate-spin" size={16} /> : <><Handshake size={16} /> FIRMAR PARCERIA REQUERIDA</>}
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* 1. Header Banner */}
+            <BannerCarousel images={storeSettings.banners || []} />
+
+            {/* 2. Store Menu */}
+            <div className="flex border-b border-slate-200 overflow-x-auto scrollbar-none">
+                {[...(storeSettings.menuOptions || ['PRODUCTS', 'PORTFOLIO', 'REVIEWS']).reduce((acc, curr) => {
+                    acc.push(curr);
+                    if (curr === 'PRODUCTS') {
+                        acc.push('PROMOTIONS');
+                    }
+                    return acc;
+                }, [] as string[]), 'ABOUT'].map(opt => (
+                    <button 
+                        key={opt}
+                        onClick={() => setActiveTab(opt as any)}
+                        className={`px-8 py-5 text-sm font-black uppercase tracking-widest transition-all relative shrink-0 ${activeTab === opt ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        {opt === 'PRODUCTS' ? 'Catálogo' : opt === 'PROMOTIONS' ? 'Promoções' : opt === 'PORTFOLIO' ? 'Portfólio' : opt === 'REVIEWS' ? 'Avaliações' : 'Sobre'}
+                        {activeTab === opt && (
+                            <motion.div layoutId="activeTab" className="absolute bottom-0 left-0 right-0 h-1 bg-indigo-600 rounded-full" />
+                        )}
+                    </button>
+                ))}
+            </div>
+
+            {/* 3. Content Sections */}
+            <AnimatePresence mode="wait">
+                {activeTab === 'PRODUCTS' && (
+                    <motion.div 
+                        key="products"
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 20 }}
+                        className="space-y-8"
+                    >
+                        {/* Filters */}
+                        <div className="flex flex-col md:flex-row gap-6 items-center bg-white p-6 rounded-[32px] shadow-sm border border-slate-100">
+                            <div className="relative flex-1 w-full flex flex-col gap-3">
+                                <div className="relative">
+                                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={24} />
+                                    <input 
+                                        className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium text-lg"
+                                        placeholder="Qual serviço você procura? Ex: Coroa, Coping..."
+                                        value={term}
+                                        onChange={(e) => setTerm(e.target.value)}
+                                    />
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {categories.map(cat => (
+                                        <button 
+                                            key={cat} 
+                                            onClick={() => setSelectedCategory(selectedCategory === cat ? 'ALL' : cat)} 
+                                            className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-full transition-all border ${selectedCategory === cat ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100 hover:text-indigo-500'}`}
+                                        >
+                                            {cat}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="relative min-w-[200px] w-full md:w-auto self-start md:self-center">
+                                <select 
+                                    value={selectedCategory} 
+                                    onChange={(e) => setSelectedCategory(e.target.value)}
+                                    className="w-full appearance-none bg-slate-50 border border-slate-100 text-slate-600 font-black text-sm uppercase tracking-widest px-6 py-4 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
+                                >
+                                    <option value="ALL">Todas Categorias</option>
+                                    {categories.map(cat => (
+                                        <option key={cat} value={cat}>{cat}</option>
+                                    ))}
+                                </select>
+                                <ChevronDown size={20} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                            </div>
+                        </div>
+
+                        {/* Products List/Grid */}
+                        {loadingProducts ? (
+                            <div className="text-center py-20">
+                                <Loader2 className="animate-spin text-indigo-600 mx-auto" size={36} />
+                                <span className="text-slate-400 text-xs font-bold uppercase tracking-widest block mt-3">Carregando catálogo...</span>
+                            </div>
+                        ) : products.length === 0 ? (
+                            <div className="text-center py-20 bg-slate-50 rounded-[40px] border-2 border-dashed border-slate-200">
+                                <Package size={64} className="mx-auto text-slate-200 mb-4" />
+                                <h3 className="text-2xl font-black text-slate-800 tracking-tighter">Nenhum resultado</h3>
+                                <p className="text-slate-400 font-medium">Tente uma busca diferente ou selecione outra categoria.</p>
+                            </div>
+                        ) : (
+                            <div className={storeSettings.layoutType === 'LIST' ? 'space-y-4' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8'}>
+                                {products.map(product => {
+                                    const { price, isCustom } = getPrice(product);
+                                    if (storeSettings.layoutType === 'LIST') {
+                                        return (
+                                            <div key={product.id} className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between group hover:shadow-md transition-all">
+                                                <div className="flex items-center gap-6">
+                                                    <div className="w-20 h-20 bg-slate-50 rounded-2xl overflow-hidden shrink-0 border border-slate-100">
+                                                        {product.imageUrl ? <img src={product.imageUrl} className="w-full h-full object-cover" /> : <Package size={32} className="m-auto mt-6 text-slate-300 pointer-events-none" />}
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-[10px] font-black uppercase text-indigo-500 tracking-widest">{product.category}</span>
+                                                        <h3 className="font-bold text-slate-800 text-lg leading-tight">{product.name}</h3>
+                                                        <div className="flex items-center gap-4 mt-1">
+                                                             <span className="text-xs font-bold text-slate-400">A partir de</span>
+                                                             {isPriceVisible ? (
+                                                                 <>
+                                                                    <span className={`font-black ${isCustom ? 'text-green-600' : 'text-indigo-600'}`}>R$ {price.toFixed(2)}</span>
+                                                                    {isCustom && <span className="bg-green-50 text-green-600 text-[8px] font-black px-2 py-0.5 rounded tracking-widest">EXCLUSIVO</span>}
+                                                                 </>
+                                                             ) : (
+                                                                 <button onClick={(e) => { e.stopPropagation(); navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`); }} className="flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-50 px-2.5 py-0.5 border border-amber-100/50 rounded-lg hover:bg-amber-100 transition-colors">
+                                                                    <Lock size={12} /> Faça login para ver valores
+                                                                 </button>
+                                                             )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button 
+                                                        onClick={() => handleShareProduct(product.id)}
+                                                        className={`p-3 rounded-xl border transition-all ${copiedServiceId === product.id ? 'bg-green-50 text-green-600 border-green-200' : 'bg-slate-50 text-slate-400 hover:text-indigo-600 border-slate-100'}`}
+                                                        title="Compartilhar serviço"
+                                                    >
+                                                        {copiedServiceId === product.id ? (
+                                                            <span className="text-[10px] font-black uppercase tracking-wider px-1">Copiado!</span>
+                                                        ) : (
+                                                            <Share2 size={16} />
+                                                        )}
+                                                    </button>
+                                                    <button onClick={() => handleConfigureProduct(product)} className="px-6 py-3 bg-indigo-600 text-white font-black text-xs rounded-xl shadow-lg shadow-indigo-100 hover:bg-indigo-700 active:scale-95 transition-all">
+                                                        CONFIGURAR
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+                                    return (
+                                        <div key={product.id} className="bg-white rounded-[40px] shadow-sm border border-slate-100 overflow-hidden hover:shadow-2xl hover:-translate-y-2 transition-all duration-300 group flex flex-col">
+                                            <div className="h-60 bg-slate-50 flex items-center justify-center relative overflow-hidden">
+                                                {product.imageUrl ? (
+                                                    <img src={product.imageUrl} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                                                ) : (
+                                                    <Package size={80} className="relative z-10 text-slate-200 group-hover:text-indigo-400 transition-colors duration-300" />
+                                                )}
+                                                {isCustom && (<div className="absolute top-4 right-4 bg-green-500 text-white text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-1 shadow-xl z-20"><BadgePercent size={12} /> SPECIAL PRICE</div>)}
+                                                <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-md px-4 py-1.5 rounded-full text-[10px] font-black text-slate-600 uppercase tracking-widest z-20 border border-white/50">{product.category}</div>
+                                                <div className="absolute inset-0 bg-indigo-900/0 group-hover:bg-indigo-900/10 transition-colors duration-300 pointer-events-none" />
+                                            </div>
+                                            <div className="p-8 flex flex-col flex-1">
+                                                <div className="mb-6 flex-1 text-center md:text-left">
+                                                    <h3 className="font-black text-slate-900 text-xl tracking-tight leading-tight group-hover:text-indigo-600 transition-colors">{product.name}</h3>
+                                                </div>
+                                                <div className="pt-6 border-t border-slate-50">
+                                                    <div className="flex justify-between items-end mb-6">
+                                                        <div className="flex flex-col">
+                                                            <span className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1">{isCustom ? 'Sua Oferta' : 'Investimento'}</span>
+                                                            <div className="flex items-baseline gap-2">
+                                                                {isPriceVisible ? (
+                                                                    <>
+                                                                        <span className={`font-black text-3xl tracking-tighter ${isCustom ? 'text-green-600' : 'text-slate-900'}`}>R$ {price.toFixed(2)}</span>
+                                                                        {isCustom && <span className="text-[10px] text-slate-300 line-through">R$ {product.basePrice.toFixed(2)}</span>}
+                                                                    </>
+                                                                ) : (
+                                                                    <button onClick={(e) => { e.stopPropagation(); navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`); }} className="flex items-center gap-1.5 text-xs font-black text-amber-600 bg-amber-50 px-3 py-1.5 border border-amber-100/50 rounded-xl leading-tight hover:bg-amber-100 transition-colors">
+                                                                        <Lock size={14} /> Registrar para ver preço
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <button 
+                                                                onClick={() => handleShareProduct(product.id)}
+                                                                className={`w-12 h-12 rounded-2xl border flex items-center justify-center transition-all ${copiedServiceId === product.id ? 'bg-green-50 text-green-600 border-green-200' : 'bg-slate-100 text-slate-400 hover:text-indigo-600 border-slate-200'}`}
+                                                                title="Compartilhar serviço"
+                                                            >
+                                                                {copiedServiceId === product.id ? (
+                                                                    <span className="text-[9px] font-black uppercase tracking-widest text-center leading-tight">Copiado!</span>
+                                                                ) : (
+                                                                    <Share2 size={18} />
+                                                                )}
+                                                            </button>
+                                                            <button onClick={() => handleConfigureProduct(product)} className="w-12 h-12 bg-slate-900 text-white rounded-2xl flex items-center justify-center hover:bg-indigo-600 transition-all active:scale-90 shadow-xl shadow-slate-200 group-hover:shadow-indigo-200">
+                                                                <Plus size={24} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+
+                {activeTab === 'PROMOTIONS' && (
+                    <motion.div key="promotions" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="p-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {visiblePromos.map(promo => {
+                                const originalProduct = localJobTypes.find(jt => jt.id === promo.originalJobTypeId);
+                                return (
+                                <div key={promo.id} className="bg-white rounded-2xl border border-yellow-200 overflow-hidden shadow-sm hover:shadow-xl transition-all group flex flex-col relative">
+                                    <div className="absolute top-4 left-4 bg-yellow-400 text-yellow-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider z-10 shadow-sm flex items-center gap-1">
+                                        <Tag size={12} /> PROMOÇÃO
+                                    </div>
+                                    <div className="h-48 bg-slate-100 relative overflow-hidden">
+                                        {promo.imageUrl ? (
+                                            <img src={promo.imageUrl} alt={promo.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                                        ) : (
+                                            <div className="absolute inset-0 flex items-center justify-center text-slate-300">
+                                                <Store size={64} />
+                                            </div>
+                                        )}
+                                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                                        <div className="absolute bottom-4 left-4 right-4 text-white">
+                                            <h3 className="font-bold text-lg leading-tight mb-1">{promo.name}</h3>
+                                            <span className="text-xs bg-white/20 backdrop-blur-md px-2 py-1 rounded-full font-medium">{promo.category}</span>
+                                            {promo.isVoucherCombo && (
+                                                <span className="text-xs bg-indigo-500/80 backdrop-blur-md px-2 py-1 rounded-full font-medium ml-2 border border-indigo-400">Pacote de Vouchers</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="p-5 flex flex-col flex-1">
+                                        {promo.promotionCallText && (
+                                            <p className="text-sm font-medium text-slate-700 italic mb-4">"{promo.promotionCallText}"</p>
+                                        )}
+                                        {originalProduct && promo.promotionQuantity && (
+                                            <div className="text-xs text-slate-500 mb-4 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <span>Produto:</span>
+                                                    <span className="font-bold text-slate-700">{originalProduct.name}</span>
+                                                </div>
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <span>Quantidade do pacote:</span>
+                                                    <span className="font-bold text-slate-700">{promo.promotionQuantity} un.</span>
+                                                </div>
+                                                <div className="flex justify-between items-center text-red-400 line-through">
+                                                    <span>Preço original total:</span>
+                                                    <span>{(originalProduct.basePrice * promo.promotionQuantity).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        <div className="mt-auto pt-4 border-t border-slate-100 flex items-center justify-between">
+                                            <div>
+                                                <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Por apenas</p>
+                                                <p className="text-xl font-black text-blue-600">{promo.basePrice.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <button 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleShareProduct(promo.id);
+                                                    }}
+                                                    className={`w-10 h-10 rounded-full border flex items-center justify-center transition-all ${copiedServiceId === promo.id ? 'bg-green-50 text-green-600 border-green-200' : 'bg-slate-50 text-slate-400 hover:text-indigo-600 border-slate-200 hover:bg-indigo-50/50 hover:border-indigo-100'}`}
+                                                    title="Compartilhar promoção"
+                                                >
+                                                    {copiedServiceId === promo.id ? (
+                                                        <span className="text-[8px] font-black uppercase tracking-widest text-center leading-tight">Copiado!</span>
+                                                    ) : (
+                                                        <Share2 size={16} />
+                                                    )}
+                                                </button>
+                                                <button 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setConfiguringProduct(promo);
+                                                    }}
+                                                    className="bg-yellow-400 hover:bg-yellow-500 text-yellow-900 w-10 h-10 rounded-full flex items-center justify-center transition-colors shadow-sm"
+                                                >
+                                                    <ShoppingCart size={20} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )})}
+                            {visiblePromos.length === 0 && (
+                                <div className="col-span-full py-12 flex flex-col items-center justify-center text-slate-400 bg-white rounded-2xl border border-slate-200 border-dashed">
+                                    <Tag size={48} className="mb-4 text-slate-300" />
+                                    <p className="font-medium text-lg text-slate-500">Nenhuma promoção ativa no momento.</p>
+                                </div>
+                            )}
+                        </div>
+                    </motion.div>
+                )}
+                {activeTab === 'PORTFOLIO' && (
+                    <motion.div key="portfolio" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
+                        <PortfolioSection portfolio={storeSettings.portfolio || []} />
+                    </motion.div>
+                )}
+
+                {activeTab === 'REVIEWS' && (
+                    <motion.div key="reviews" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
+                        <ReviewsSection labId={selectedLab.id} />
+                    </motion.div>
+                )}
+
+                {activeTab === 'ABOUT' && selectedLab && (
+                    <motion.div 
+                        key="about" 
+                        initial={{ opacity: 0, y: 20 }} 
+                        animate={{ opacity: 1, y: 0 }} 
+                        exit={{ opacity: 0, y: -20 }}
+                        className="grid grid-cols-1 md:grid-cols-2 gap-8"
+                    >
+                        {/* Location Details */}
+                        <div className="bg-white p-6 md:p-8 rounded-[32px] border border-slate-100 shadow-sm space-y-6">
+                            <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                                <MapPin className="text-indigo-600" size={24} /> Localização & Endereço
+                            </h3>
+                            
+                            <div className="space-y-4 font-medium text-slate-600">
+                                {selectedLab.address ? (
+                                    <div className="flex items-start gap-4">
+                                        <div className="p-3 bg-slate-50 text-indigo-600 rounded-2xl shrink-0">
+                                            <MapPin size={22} />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-800 mb-1">Endereço Principal</p>
+                                            <p className="text-sm text-slate-500 leading-relaxed">
+                                                {selectedLab.address}, {selectedLab.number}
+                                                {selectedLab.complement && ` - ${selectedLab.complement}`}
+                                            </p>
+                                            <p className="text-sm text-slate-500 font-semibold mt-1">
+                                                {selectedLab.neighborhood && `${selectedLab.neighborhood}, `}
+                                                {selectedLab.city && `${selectedLab.city} - ${selectedLab.state}`}
+                                            </p>
+                                            {selectedLab.cep && <p className="text-xs text-slate-400 mt-2 bg-slate-50 px-2 py-1 rounded w-fit">CEP: {selectedLab.cep}</p>}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="text-center py-12 text-slate-400 italic bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                                        Endereço não informado pelo laboratório.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Contacts & General Info */}
+                        <div className="bg-white p-6 md:p-8 rounded-[32px] border border-slate-100 shadow-sm space-y-6">
+                            <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                                <Info className="text-teal-600" size={24} /> Contato & Responsável
+                            </h3>
+
+                            <div className="space-y-6">
+                                {/* Contacts */}
+                                <div className="space-y-4">
+                                    {(selectedLab.phone || selectedLab.email) ? (
+                                        <>
+                                            {selectedLab.phone && (
+                                                <div className="flex items-center gap-4">
+                                                    <span className="p-3 bg-slate-50 text-slate-500 rounded-2xl text-xl">📞</span>
+                                                    <div>
+                                                        <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Telefone</p>
+                                                        <p className="text-base font-black text-slate-800">{selectedLab.phone}</p>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {selectedLab.email && (
+                                                <div className="flex items-center gap-4">
+                                                    <span className="p-3 bg-slate-50 text-slate-500 rounded-2xl text-xl">📧</span>
+                                                    <div>
+                                                        <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">E-mail Comercial</p>
+                                                        <p className="text-base font-black text-slate-800 select-all">{selectedLab.email}</p>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="text-center py-6 text-slate-400 italic bg-slate-50 rounded-2xl">
+                                            Contatos comerciais não preenchidos.
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Technical Responsible */}
+                                <div className="pt-6 border-t border-slate-100 space-y-3">
+                                    <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">Responsabilidade Técnica</h4>
+                                    
+                                    <div className="bg-slate-50 p-5 rounded-[24px] border border-slate-100 space-y-3">
+                                        <p className="text-base font-bold text-slate-800">
+                                            {selectedLab.financialSettings?.techResponsibleName || 'Não Informado'}
+                                        </p>
+                                        <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-500 font-medium">
+                                            {selectedLab.croNumero && (
+                                                <p className="bg-white px-3 py-1.5 rounded-xl border border-slate-200">
+                                                    <span className="font-bold text-slate-400 uppercase mr-1">CRO:</span> 
+                                                    <span className="font-black text-slate-700">{selectedLab.croNumero} {selectedLab.croUf && ` / ${selectedLab.croUf}`}</span>
+                                                </p>
+                                            )}
+                                            {selectedLab.financialSettings?.techResponsibleCpf && (
+                                                <p className="bg-white px-3 py-1.5 rounded-xl border border-slate-200">
+                                                    <span className="font-bold text-slate-400 uppercase mr-1">CPF:</span> 
+                                                    <span className="font-black text-slate-700">{selectedLab.financialSettings.techResponsibleCpf}</span>
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            </div>
+                )
+            )}
+        </div>
+    );
+};

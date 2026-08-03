@@ -1,0 +1,1673 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useApp } from '../../context/AppContext';
+import { OnlineRequisition, Attachment, JobStatus, Job } from '../../types';
+import { apiAddPatientHistory } from '../../services/firebaseService';
+import { ClipboardList, Plus, FileText, Send, Loader2, AlertCircle, CheckCircle, Clock, Trash2, HelpCircle, HardDrive, ShieldAlert, Building, RefreshCw, Activity, Package, X, MessageSquare, MessageCircle, Lock, XCircle } from 'lucide-react';
+import { ChatSystem } from '../../components/ChatSystem';
+import { AttachmentPreviewModal } from '../../components/AttachmentPreviewModal';
+import { Odontogram } from '../../components/Odontogram';
+import { db } from '../../services/firebaseConfig';
+import * as firestorePkg from 'firebase/firestore';
+
+const { collection, getDocs, doc, getDoc } = firestorePkg as any;
+
+const parseDateSafely = (val: any): Date | null => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (val.seconds) return new Date(val.seconds * 1000);
+    try {
+        const d = new Date(val);
+        if (!isNaN(d.getTime())) return d;
+    } catch (e) {}
+    return null;
+};
+
+interface LaboratoryOption {
+  id: string;
+  name: string;
+}
+
+interface ServiceOption {
+  id: string;
+  name: string;
+  basePrice?: number;
+  variationGroups?: any[];
+}
+
+export const DentistRequisitions = () => {
+  const { 
+    currentUser, 
+    currentOrg, 
+    onlineRequisitions, 
+    addOnlineRequisition,
+    patients,
+    uploadFile,
+    jobs,
+    activeManualDentistId,
+    activeOrganization,
+    switchActiveOrganization,
+    userConnections,
+    allLaboratories
+  } = useApp();
+
+  const [chatJob, setChatJob] = useState<Job | null>(null);
+  const [popupJob, setPopupJob] = useState<Job | null>(null);
+
+  const userAny = currentUser as any;
+
+  const [rightTab, setRightTab] = useState<'REQS' | 'REJECTED' | 'JOBS'>('REQS');
+
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [labs, setLabs] = useState<LaboratoryOption[]>([]);
+  const [services, setServices] = useState<ServiceOption[]>([]);
+
+  // Form selections and inputs
+  const [selectedLabId, setSelectedLabId] = useState('');
+  const [patientName, setPatientName] = useState('');
+  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [selectedServiceId, setSelectedServiceId] = useState('');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  // State for attachment previews
+  const [selectedAttachment, setSelectedAttachment] = useState<Attachment | null>(null);
+  const [allAttachmentsForPreview, setAllAttachmentsForPreview] = useState<Attachment[]>([]);
+
+  // Selector or manual input toggle for patient name
+  const [patientInputMode, setPatientInputMode] = useState<'SELECT' | 'MANUAL'>('MANUAL');
+  const [isModeSetAutomatically, setIsModeSetAutomatically] = useState(false);
+
+  const [showPatientSuggestions, setShowPatientSuggestions] = useState(false);
+  const patientInputContainerRef = useRef<HTMLDivElement>(null);
+
+  const filteredPatients = useMemo(() => {
+    if (!patientName.trim()) return patients || [];
+    const searchLower = patientName.toLowerCase();
+    return (patients || []).filter(p => 
+      p.name.toLowerCase().includes(searchLower)
+    );
+  }, [patients, patientName]);
+
+  const dentistActiveJobs = useMemo(() => {
+    return (jobs || []).filter(job => {
+      return (
+        job.dentistId === currentUser?.id ||
+        job.dentistId === userAny?.manualDentistId ||
+        job.dentistId === activeManualDentistId ||
+        job.dentistUserId === currentUser?.id
+      );
+    });
+  }, [jobs, currentUser?.id, userAny?.manualDentistId, activeManualDentistId]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (patientInputContainerRef.current && !patientInputContainerRef.current.contains(event.target as Node)) {
+        setShowPatientSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (!isModeSetAutomatically && patients && patients.length > 0) {
+      setPatientInputMode('SELECT');
+      setIsModeSetAutomatically(true);
+    }
+  }, [patients, isModeSetAutomatically]);
+
+  // Dynamic service variations and quantity
+  const [selectedVariations, setSelectedVariations] = useState<Record<string, string | string[]>>({});
+  const [quantity, setQuantity] = useState<number>(1);
+  const [itemSelectedTeeth, setItemSelectedTeeth] = useState<string[]>([]);
+  const [requisitionItems, setRequisitionItems] = useState<any[]>([]);
+
+  useEffect(() => {
+    setSelectedVariations({});
+    setQuantity(1);
+    setItemSelectedTeeth([]);
+  }, [selectedServiceId]);
+
+  const handleVariationChange = (group: any, optionId: string) => {
+    const isSingle = group.selectionType === 'SINGLE';
+    if (isSingle) {
+      if (selectedVariations[group.id] === optionId) {
+        const copy = { ...selectedVariations };
+        delete copy[group.id];
+        setSelectedVariations(copy);
+      } else {
+        setSelectedVariations({ ...selectedVariations, [group.id]: optionId });
+      }
+    } else {
+      const prev = selectedVariations[group.id] as string[] || [];
+      if (prev.includes(optionId)) {
+        setSelectedVariations({
+          ...selectedVariations,
+          [group.id]: prev.filter(id => id !== optionId)
+        });
+      } else {
+        setSelectedVariations({
+          ...selectedVariations,
+          [group.id]: [...prev, optionId]
+        });
+      }
+    }
+  };
+
+  // File Attachments state
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; url: string; size: string; isUploading?: boolean; error?: string }[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Fetch permitted/linked laboratories
+  useEffect(() => {
+    const fetchConnectedLabs = async () => {
+      if (!currentUser) return;
+      try {
+        setLoading(true);
+        const fetchedLabs: LaboratoryOption[] = [];
+
+        // Helper to check if lab has a valid plan for receiving requisitions
+        const isValidLabPlan = (planId: string | undefined) => {
+            return planId !== 'free_lab' && planId !== 'free';
+        };
+
+        // 1. Check direct connection via connectedLabId
+        if (userAny?.connectedLabId) {
+          const directLabDoc = await getDoc(doc(db, 'organizations', userAny.connectedLabId));
+          if (directLabDoc.exists()) {
+            const data = directLabDoc.data();
+            if (isValidLabPlan(data.planId)) {
+                fetchedLabs.push({
+                  id: userAny.connectedLabId,
+                  name: data.name || 'Laboratório Conveniado'
+                });
+            }
+          }
+        }
+
+        // 2. Use userConnections from AppContext
+        for (const conn of userConnections) {
+            if (conn.status === 'ACTIVE' && conn.organizationId !== userAny?.connectedLabId) {
+               const labData = allLaboratories.find(l => l.id === conn.organizationId);
+               if (labData) {
+                   if (isValidLabPlan(labData.planId)) {
+                       fetchedLabs.push({
+                           id: conn.organizationId,
+                           name: labData.name || conn.organizationName || 'Laboratório'
+                       });
+                   }
+               } else {
+                   const labDoc = await getDoc(doc(db, 'organizations', conn.organizationId));
+                   if (labDoc.exists()) {
+                       const docData = labDoc.data();
+                       if (isValidLabPlan(docData.planId)) {
+                           fetchedLabs.push({
+                               id: conn.organizationId,
+                               name: docData.name || conn.organizationName || 'Laboratório'
+                           });
+                       }
+                   }
+               }
+            }
+        }
+
+        setLabs(fetchedLabs);
+        if (fetchedLabs.length > 0) {
+          setSelectedLabId(fetchedLabs[0].id);
+        }
+
+        setLoading(false);
+      } catch (err) {
+        console.error('Error fetching partner laboratories:', err);
+        setError('Falha ao carregar laboratórios parceiros relacionados.');
+        setLoading(false);
+      }
+    };
+
+    fetchConnectedLabs();
+  }, [currentUser, userConnections, allLaboratories]);
+
+  // Fetch services/jobTypes of the selected laboratory dynamically when selection changes
+  useEffect(() => {
+    const fetchLabServices = async () => {
+      if (!selectedLabId) {
+        setServices([]);
+        return;
+      }
+      try {
+        if (activeOrganization?.id !== selectedLabId && switchActiveOrganization) {
+          switchActiveOrganization(selectedLabId);
+        }
+        const servSnap = await getDocs(collection(db, 'organizations', selectedLabId, 'jobTypes'));
+        const list: ServiceOption[] = [];
+        servSnap.forEach((docRef: any) => {
+          const data = docRef.data();
+          if (data.isVisibleInternally !== false) {
+            list.push({
+              id: data.id,
+              name: data.name,
+              basePrice: data.basePrice || 0,
+              variationGroups: data.variationGroups || []
+            });
+          }
+        });
+        setServices(list);
+        if (list.length > 0) {
+          setSelectedServiceId(list[0].id);
+        } else {
+          setSelectedServiceId('');
+        }
+      } catch (err) {
+        console.error('Error fetching laboratory service list:', err);
+      }
+    };
+
+    fetchLabServices();
+  }, [selectedLabId]);
+
+  // Handle file upload to real Firebase Storage synchronously/asynchronously on file select
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArr = Array.from(e.target.files);
+      await processAndUploadFiles(filesArr);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const filesArr = Array.from(e.dataTransfer.files);
+      await processAndUploadFiles(filesArr);
+    }
+  };
+
+  const processAndUploadFiles = async (files: File[]) => {
+    const newItems = files.map((file) => {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+      const localUrl = URL.createObjectURL(file); // Keep local Object URL for fast preliminary rendering
+      const tempId = `file_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      return {
+        id: tempId,
+        name: file.name,
+        url: localUrl,
+        size: `${sizeMb} MB`,
+        isUploading: true
+      };
+    });
+
+    setAttachedFiles(prev => [...prev, ...newItems]);
+
+    // Upload each file to Firebase Storage
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const targetId = newItems[i].id;
+      try {
+        const publicUrl = await uploadFile(file);
+        setAttachedFiles(prev => {
+          return prev.map((item) => {
+            if ((item as any).id === targetId) {
+              return {
+                ...item,
+                url: publicUrl,
+                isUploading: false
+              };
+            }
+            return item;
+          });
+        });
+      } catch (err: any) {
+        console.error("Error uploading file to Firebase Storage:", err);
+        setAttachedFiles(prev => {
+          return prev.map((item) => {
+            if ((item as any).id === targetId) {
+              return {
+                ...item,
+                isUploading: false,
+                error: 'Erro no envio'
+              };
+            }
+            return item;
+          });
+        });
+      }
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleAddService = () => {
+    if (!selectedServiceId) return;
+    const activeService = services.find(s => s.id === selectedServiceId);
+    if (!activeService) return;
+    
+    const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+    
+    setRequisitionItems(prev => [
+        ...prev, 
+        {
+            id: `item_${Date.now()}_${Math.random().toString(36).substring(2,9)}`,
+            serviceId: selectedServiceId,
+            serviceName: activeService.name,
+            selectedVariationIds: allSelectedOptionIds,
+            quantity: quantity,
+            selectedTeeth: itemSelectedTeeth.length > 0 ? itemSelectedTeeth : undefined
+        }
+    ]);
+    
+    setSelectedServiceId('');
+    setSelectedVariations({});
+    setQuantity(1);
+    setItemSelectedTeeth([]);
+  };
+
+  const handleReuseRequisition = (req: OnlineRequisition) => {
+    setSelectedLabId(req.labId);
+    setPatientName(req.patientName || '');
+    setNotes(req.notes || '');
+    
+    // Map items
+    if (req.items && req.items.length > 0) {
+      setRequisitionItems(req.items.map(item => ({
+        id: item.id || `item_${Date.now()}_${Math.random().toString(36).substring(2,9)}`,
+        serviceId: item.serviceId,
+        serviceName: item.serviceName,
+        selectedVariationIds: item.selectedVariationIds || [],
+        quantity: item.quantity || 1,
+        selectedTeeth: item.selectedTeeth || []
+      })));
+    } else {
+      setRequisitionItems([{
+        id: `item_${Date.now()}_${Math.random().toString(36).substring(2,9)}`,
+        serviceId: req.serviceId,
+        serviceName: req.serviceName,
+        selectedVariationIds: req.selectedVariationIds || [],
+        quantity: req.quantity || 1,
+        selectedTeeth: req.selectedTeeth || []
+      }]);
+    }
+    
+    // Map attachments
+    setAttachedFiles(req.attachments ? req.attachments.map(att => ({
+      name: att.name,
+      url: att.url,
+      size: 'N/A'
+    })) : []);
+    
+    // Scroll to form
+    const formEl = document.getElementById('newRequisitionForm');
+    if (formEl) {
+      formEl.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess(false);
+
+    if (!selectedLabId) {
+      setError('Selecione o laboratório para o envio.');
+      return;
+    }
+
+    if (!patientName.trim()) {
+      setError('Por favor, informe o nome do paciente.');
+      return;
+    }
+
+    const hasCurrentItem = !!selectedServiceId;
+    if (requisitionItems.length === 0 && !hasCurrentItem) {
+      setError('Por favor, adicione pelo menos um serviço.');
+      return;
+    }
+
+    if (attachedFiles.some(f => f.isUploading)) {
+      setError('Aguarde o carregamento completo dos arquivos anexados antes de enviar.');
+      return;
+    }
+
+    if (attachedFiles.some(f => f.error)) {
+      setError('Por favor, remova ou reenvie os arquivos que falharam no carregamento.');
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      const activeLab = labs.find(l => l.id === selectedLabId);
+      const activeService = services.find(s => s.id === selectedServiceId);
+
+      const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+
+      const currentItem = selectedServiceId && activeService ? {
+        id: `item_cur_${Date.now()}`,
+        serviceId: selectedServiceId,
+        serviceName: activeService.name,
+        selectedVariationIds: allSelectedOptionIds,
+        quantity: quantity,
+        selectedTeeth: itemSelectedTeeth.length > 0 ? itemSelectedTeeth : undefined
+      } : null;
+
+      const finalItems = [...requisitionItems];
+      if (currentItem) {
+          finalItems.push(currentItem);
+      }
+
+      if (finalItems.length === 0) {
+          setError('Nenhum serviço válido para enviar.');
+          setSubmitting(false);
+          return;
+      }
+
+      const mappedAttachments: Attachment[] = attachedFiles.map((f, idx) => ({
+        id: `att_${idx}_${Date.now()}`,
+        name: f.name,
+        url: f.url,
+        uploadedAt: new Date()
+      }));
+
+      // Auto-assign patient ID on exact name match if ID not already set
+      let finalPatientId = selectedPatientId;
+      if (!finalPatientId && patientName.trim()) {
+        const matchedPatient = (patients || []).find(
+          p => p.name.trim().toLowerCase() === patientName.trim().toLowerCase()
+        );
+        if (matchedPatient) {
+          finalPatientId = matchedPatient.id;
+        }
+      }
+
+      // Create new requisition on Firebase
+      const reqPayload: Omit<OnlineRequisition, 'id' | 'createdAt'> = {
+        labId: selectedLabId,
+        labName: activeLab?.name || 'Laboratório',
+        dentistId: currentUser?.id || '',
+        dentistManualId: activeManualDentistId || userAny?.manualDentistId || '',
+        dentistName: activeManualDentistId ? (jobs?.find(j => j.dentistId === activeManualDentistId)?.dentistName || currentUser?.name || 'Dentista') : (currentUser?.name || 'Dentista Parceiro'),
+        dentistClinicName: currentOrg?.name || currentUser?.clinicName || 'Consultório Parceiro',
+        patientName: patientName.toUpperCase().trim(),
+        serviceId: finalItems[0].serviceId,
+        serviceName: finalItems[0].serviceName,
+        notes: notes.trim(),
+        status: 'PENDING',
+        attachments: mappedAttachments,
+        selectedVariationIds: finalItems[0].selectedVariationIds,
+        quantity: finalItems[0].quantity,
+        selectedTeeth: finalItems[0].selectedTeeth,
+        items: finalItems
+      };
+
+      await addOnlineRequisition(selectedLabId, reqPayload);
+
+      // Save prosthesis history in selected patient clinical history records
+      if (finalPatientId && currentUser) {
+        try {
+          const specsCompiled = finalItems.map(item => `${item.quantity || 1}x ${item.serviceName}`).join(', ');
+          const labName = activeLab?.name || 'Laboratório';
+          const descriptionText = `Enviada requisição online ao Laboratório: ${labName}. Requisito: ${specsCompiled}.`;
+
+          const historyRecord: any = {
+            id: `hist_${Date.now()}`,
+            patientId: finalPatientId,
+            type: 'PROSTHESIS',
+            description: descriptionText,
+            date: new Date(),
+            createdAt: new Date(),
+            professionalId: currentUser.id,
+            professionalName: currentUser.name,
+            labName: labName,
+            labId: selectedLabId,
+            specs: specsCompiled,
+            attachments: mappedAttachments || []
+          };
+
+          const dentistOrgId = currentUser.organizationId;
+          if (dentistOrgId) {
+            await apiAddPatientHistory(dentistOrgId, finalPatientId, historyRecord);
+          }
+        } catch (historyErr) {
+          console.error("Erro ao registrar histórico do paciente na requisição online:", historyErr);
+        }
+      }
+
+      setSuccess(true);
+      setPatientName('');
+      setSelectedPatientId('');
+      setNotes('');
+      setAttachedFiles([]);
+      setSelectedVariations({});
+      setQuantity(1);
+      setRequisitionItems([]);
+    } catch (err: any) {
+      console.error('Error submitting online requisition:', err);
+      setError(err.message || 'Falha ao transmitir requisição para o laboratório.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px] p-8">
+        <Loader2 className="h-10 w-10 text-indigo-600 animate-spin mb-4" />
+        <p className="text-slate-500 font-medium">Carregando portal de requisições...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-8">
+      {/* Overview Header */}
+      <div>
+        <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+          <ClipboardList className="text-indigo-600" size={28} />
+          Portal de Requisições de Trabalho
+        </h2>
+        <p className="text-sm text-slate-500">
+          Envie pedidos de serviços rápidos, guias de trabalho, fotos e arquivos 3D diretamente para os seus laboratórios conectados de forma segura.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Side: Submit Panel */}
+        <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-6">
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-4">
+            <Send className="text-indigo-600" size={20} />
+            <h3 className="font-extrabold text-slate-800">Nova Requisição Online</h3>
+          </div>
+
+          {error && (
+            <div className="p-4 bg-red-50 text-red-600 text-sm rounded-2xl flex items-center gap-2 border border-red-100">
+              <AlertCircle size={18} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {success && (
+            <div className="p-4 bg-emerald-50 text-emerald-800 text-sm rounded-2xl flex items-center gap-2 border border-emerald-100 font-bold">
+              <CheckCircle size={18} className="text-emerald-600" />
+              <span>Sua requisição foi enviada com sucesso!</span>
+            </div>
+          )}
+
+          {labs.length === 0 ? (
+            <div className="p-8 text-center bg-amber-50/50 rounded-2xl border border-amber-100 flex flex-col items-center gap-2">
+              <Building className="text-amber-500" size={32} />
+              <p className="text-xs font-bold text-slate-700">Nenhum Laboratório Vinculado</p>
+              <p className="text-[11px] text-slate-500 max-w-xs">
+                Para enviar requisições de trabalho, você precisa de um laboratório parceiro conectado à sua conta. Solicite o link de requisição para o seu laboratório.
+              </p>
+            </div>
+          ) : (
+            <form id="newRequisitionForm" className="space-y-5" onSubmit={handleSubmit}>
+              {/* Select Lab */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Laboratório Destinatário *
+                </label>
+                <select
+                  required
+                  value={selectedLabId}
+                  onChange={(e) => setSelectedLabId(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700"
+                >
+                  {labs.map(lab => (
+                    <option key={lab.id} value={lab.id}>
+                      {lab.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Patient Name */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Paciente *
+                </label>
+                <div ref={patientInputContainerRef} className="relative">
+                  <input
+                    type="text"
+                    required
+                    value={patientName}
+                    onChange={(e) => {
+                      setPatientName(e.target.value);
+                      setSelectedPatientId('');
+                      setShowPatientSuggestions(true);
+                    }}
+                    onFocus={() => setShowPatientSuggestions(true)}
+                    placeholder="DIGITE OU SELECIONE UM PACIENTE..."
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold uppercase text-slate-700 placeholder:normal-case placeholder:font-medium placeholder:text-slate-400"
+                  />
+                  {showPatientSuggestions && filteredPatients.length > 0 && (
+                    <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-150 rounded-2xl shadow-xl max-h-[220px] overflow-y-auto divide-y divide-slate-50">
+                      {filteredPatients.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setPatientName(p.name.toUpperCase());
+                            setSelectedPatientId(p.id);
+                            setShowPatientSuggestions(false);
+                          }}
+                          className="w-full text-left px-4 py-3.5 hover:bg-slate-50 text-xs font-bold text-slate-700 uppercase transition-colors"
+                        >
+                          {p.name.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Select Service */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Serviço Solicitado {requisitionItems.length === 0 ? '*' : ''}
+                </label>
+                {services.length === 0 ? (
+                  <p className="text-xs text-amber-600 bg-amber-50 rounded-xl p-3">
+                    Nenhum serviço disponível listado para este laboratório.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    <select
+                      required={requisitionItems.length === 0}
+                      value={selectedServiceId}
+                      onChange={(e) => setSelectedServiceId(e.target.value)}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700 text-sm"
+                    >
+                      <option value="" disabled>SELECIONE UM TRABALHO / SERVIÇO</option>
+                      {services.map(ser => (
+                        <option key={ser.id} value={ser.id}>
+                          {ser.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Active Service Variations Selection (Strictly NO prices/modifiers) */}
+                    {(() => {
+                      const activeService = services.find(s => s.id === selectedServiceId);
+                      if (!activeService) return null;
+                      
+                      return (
+                        <div className="space-y-4 animate-in fade-in duration-300">
+                          {activeService.variationGroups && activeService.variationGroups.length > 0 && (
+                            <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-4">
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-200 pb-1.5">
+                                Especificações & Variações da Prótese
+                              </p>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                {activeService.variationGroups.map(group => (
+                                  <div key={group.id} className="space-y-2">
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                      {group.name}
+                                    </label>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {group.options?.map((option: any) => {
+                                        const isSelected = group.selectionType === 'SINGLE' 
+                                          ? selectedVariations[group.id] === option.id 
+                                          : (selectedVariations[group.id] as string[] || []).includes(option.id);
+                                        return (
+                                          <button
+                                            key={option.id}
+                                            type="button"
+                                            onClick={() => handleVariationChange(group, option.id)}
+                                            className={`px-3 py-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${
+                                              isSelected 
+                                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm scale-102 font-black' 
+                                                : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-400 hover:text-indigo-600'
+                                            }`}
+                                          >
+                                            {option.name}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="pt-2">
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                              Dentes Relacionados (Opcional)
+                            </label>
+                            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex justify-center items-center overflow-hidden">
+                              <Odontogram 
+                                selectedTeeth={itemSelectedTeeth}
+                                onChange={(teeth) => {
+                                  setItemSelectedTeeth(teeth);
+                                  if (teeth.length > 0) {
+                                    setQuantity(teeth.length);
+                                  } else {
+                                    setQuantity(1);
+                                  }
+                                }}
+                                className="w-full max-w-[260px] sm:max-w-[320px] md:max-w-[400px] h-auto"
+                              />
+                            </div>
+                            {itemSelectedTeeth.length > 0 && (
+                              <p className="text-xs text-indigo-600 font-bold mt-2 ml-1">
+                                Dentes selecionados: {itemSelectedTeeth.sort().join(', ')}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Quantity Selector */}
+                          <div className={`w-24 mt-2 ${itemSelectedTeeth.length > 0 ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                              Quantidade *
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              required
+                              readOnly={itemSelectedTeeth.length > 0}
+                              value={quantity}
+                              onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none text-center font-black text-slate-700 focus:ring-2 focus:ring-indigo-500"
+                            />
+                          </div>
+                          
+                          <div className="flex justify-end mt-2">
+                              <button type="button" onClick={handleAddService} className="text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-4 py-2 rounded-xl transition flex items-center gap-1"><Plus size={14}/> Adicionar Serviço</button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+                
+                {/* Added Services List */}
+                {requisitionItems.length > 0 && (
+                    <div className="space-y-2 mt-6 animate-in fade-in">
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                            Serviços Adicionados ({requisitionItems.length})
+                        </label>
+                        {requisitionItems.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between bg-white border border-slate-200 p-3.5 rounded-2xl shadow-sm">
+                                <div>
+                                    <p className="font-extrabold text-xs text-slate-800">{item.quantity}x {item.serviceName}</p>
+                                    {item.selectedVariationIds && item.selectedVariationIds.length > 0 && (
+                                        <p className="text-[10px] text-slate-500 mt-1 font-bold">Variações selecionadas: {item.selectedVariationIds.length}</p>
+                                    )}
+                                    {item.selectedTeeth && item.selectedTeeth.length > 0 && (
+                                        <p className="text-[10px] text-indigo-500 mt-1 font-bold">Dentes: {item.selectedTeeth.join(', ')}</p>
+                                    )}
+                                </div>
+                                <button type="button" onClick={() => setRequisitionItems(prev => prev.filter(i => i.id !== item.id))} className="text-red-500 hover:bg-red-50 p-2 rounded-xl transition-colors shrink-0">
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+              </div>
+
+              {/* Drag and Drop File Attachments */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Enviar Arquivos 3D (STL/PLY), Fotos ou Vídeos do Caso
+                </label>
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`border-2 border-dashed rounded-2xl p-6 text-center transition flex flex-col items-center justify-center cursor-pointer ${
+                    isDragging ? 'border-indigo-500 bg-indigo-50/50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100/50'
+                  }`}
+                >
+                  <HardDrive className="text-slate-400 mb-2" size={32} />
+                  <p className="text-xs font-bold text-slate-700 mb-1">
+                    Arraste e solte seus arquivos de imagem, vídeo ou STL aqui
+                  </p>
+                  <p className="text-[10px] text-slate-400 mb-3">ou clique para computador</p>
+                  
+                  <input
+                    type="file"
+                    multiple
+                    onChange={handleFileUpload}
+                    className="hidden"
+                    id="requisitionFiles"
+                  />
+                  <label
+                    htmlFor="requisitionFiles"
+                    className="px-4 py-1.5 bg-white border border-slate-200 font-extrabold text-[11px] rounded-xl text-slate-600 shadow-sm hover:bg-slate-50 cursor-pointer"
+                  >
+                    Selecionar Arquivos
+                  </label>
+                </div>
+
+                {/* Attachments List */}
+                {attachedFiles.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Arquivos anexados ({attachedFiles.length})</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {attachedFiles.map((file, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-slate-50/55 p-2 rounded-xl border border-slate-100 text-xs">
+                          <span className="font-bold text-slate-700 truncate max-w-[130px]" title={file.name}>
+                            {file.name}
+                          </span>
+                          <div className="flex items-center gap-1.5 ml-2">
+                            {file.isUploading ? (
+                              <span className="text-[9px] text-indigo-500 font-bold flex items-center gap-1 uppercase tracking-wider shrink-0">
+                                <Loader2 size={10} className="animate-spin shrink-0" /> <span className="hidden xs:inline">Enviando...</span>
+                              </span>
+                            ) : file.error ? (
+                              <span className="text-[9px] text-red-500 font-bold uppercase tracking-wider shrink-0" title={file.error}>
+                                Falhou
+                              </span>
+                            ) : (
+                              <span className="text-[9px] text-emerald-600 font-black uppercase tracking-wider shrink-0">
+                                Pronto
+                              </span>
+                            )}
+                            <span className="text-[9px] text-slate-400 shrink-0">{file.size}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeAttachment(idx)}
+                              className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg shrink-0"
+                              disabled={file.isUploading}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Service Observations */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Observações de Serviço
+                </label>
+                <textarea
+                  rows={3}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Informe detalhes de cor da prótese, especificidades do material, dentes específicos, ou outras recomendações importantes..."
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700 text-xs"
+                />
+              </div>
+
+              {/* Submit Action */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={submitting || services.length === 0}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-2 transition disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <>
+                      <Send size={14} /> Transmitir Caso ao Laboratório
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+
+        {/* Right Side: Requisition History Tracker */}
+        <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-6 flex flex-col h-fit">
+          <div className="flex flex-col gap-4 border-b border-slate-100 pb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Clock className="text-indigo-600" size={20} />
+                <h3 className="font-extrabold text-slate-800">Acompanhamento de Casos</h3>
+              </div>
+            </div>
+            
+            {/* Elegant Tabs */}
+            <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+              <button
+                type="button"
+                onClick={() => setRightTab('REQS')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                  rightTab === 'REQS' 
+                    ? 'bg-white text-slate-800 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <Package size={14} />
+                Solicitações ({onlineRequisitions ? onlineRequisitions.filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'PENDING').length : 0})
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightTab('REJECTED')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                  rightTab === 'REJECTED' 
+                    ? 'bg-white text-rose-700 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <XCircle size={14} className={rightTab === 'REJECTED' ? 'text-rose-500' : 'text-slate-400'} />
+                Recusados ({onlineRequisitions ? onlineRequisitions.filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'REJECTED').length : 0})
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightTab('JOBS')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                  rightTab === 'JOBS' 
+                    ? 'bg-white text-slate-800 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <Activity size={14} />
+                Casos Ativos ({dentistActiveJobs.length})
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+            {rightTab === 'REQS' ? (
+              (!onlineRequisitions || onlineRequisitions.filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'PENDING').length === 0) ? (
+                <div className="p-12 text-center text-slate-400 italic text-xs">
+                  Nenhuma solicitação pendente no momento.
+                </div>
+              ) : (
+                onlineRequisitions
+                  .filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'PENDING')
+                  .map(req => {
+                    const linkedJob = (jobs || []).find(j => j.id === req.acceptedAsJobId || j.osNumber === 'REQ-' + req.id.substring(0, 5).toUpperCase());
+                    
+                    return (
+                      <div 
+                        key={req.id} 
+                        className="p-4 rounded-2xl border border-slate-100 bg-slate-50/40 hover:bg-slate-50/90 transition flex flex-col gap-2"
+                      >
+                        <div className="flex justify-between items-start gap-1">
+                          <div>
+                            <div className="font-bold text-slate-800 text-xs uppercase">{req.patientName}</div>
+                            {req.items && req.items.length > 0 ? (
+                                <div className="space-y-1 mt-1">
+                                    {req.items.map(item => (
+                                        <div key={item.id} className="text-[10px] font-bold text-slate-700">
+                                            {item.quantity || 1}x {item.serviceName}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="text-[10px] font-bold text-slate-700">{req.serviceName}</div>
+                                    {req.quantity && req.quantity > 0 && (
+                                      <div className="text-[9px] font-bold text-slate-500 mt-0.5">
+                                        Quantidade: {req.quantity} {req.quantity === 1 ? 'item' : 'itens/dentes'}
+                                      </div>
+                                    )}
+                                    {req.selectedVariationIds && req.selectedVariationIds.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {req.selectedVariationIds.map(varId => {
+                                          let foundName = '';
+                                          for (const s of services) {
+                                            if (s.variationGroups) {
+                                              for (const g of s.variationGroups) {
+                                                const opt = g.options?.find((o: any) => o.id === varId);
+                                                if (opt) {
+                                                  foundName = `${g.name}: ${opt.name}`;
+                                                  break;
+                                                }
+                                              }
+                                            }
+                                            if (foundName) break;
+                                          }
+                                          if (!foundName) return null;
+                                          return (
+                                            <span key={varId} className="bg-slate-100 text-slate-600 border border-slate-200 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight">
+                                              {foundName}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                    {req.selectedTeeth && req.selectedTeeth.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        <span className="bg-indigo-50 text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight">
+                                          Dentes: {req.selectedTeeth.join(', ')}
+                                        </span>
+                                      </div>
+                                    )}
+                                </>
+                            )}
+                          </div>
+                          
+                          <span className="inline-block text-[8px] font-black px-2 py-0.5 rounded uppercase tracking-wider bg-amber-100 text-amber-800">
+                            Pendente
+                          </span>
+                        </div>
+
+                        {linkedJob && (
+                          <div className="mt-1 p-2 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-between text-[10px]">
+                            <span className="font-bold text-emerald-800">
+                              Fase no Lab: <span className="uppercase font-black text-emerald-900">{linkedJob.currentSector || 'Triagem'}</span>
+                            </span>
+                            <span className="text-slate-500">
+                              OS: #{linkedJob.osNumber}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight flex items-center gap-1 mt-1">
+                          <Clock size={10} className="text-slate-400" /> Enviado em: {parseDateSafely(req.sentAt || req.createdAt)?.toLocaleString('pt-BR') || '---'}
+                        </div>
+
+                        {req.notes && (
+                          <p className="text-[10px] text-slate-500 italic line-clamp-2">
+                            "{req.notes}"
+                          </p>
+                        )}
+
+                        {req.attachments && req.attachments.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {req.attachments.map((file, i) => (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAttachment(file);
+                                  setAllAttachmentsForPreview(req.attachments || []);
+                                }}
+                                className="bg-white hover:bg-slate-50 border border-slate-200 text-[8px] px-1.5 py-0.5 rounded text-indigo-600 hover:text-indigo-800 font-bold truncate max-w-[125px] transition-colors flex items-center gap-1 focus:outline-none"
+                                title="Clique de visualização/download de arquivo"
+                              >
+                                <FileText size={8} className="shrink-0" /> {file.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+              )
+            ) : rightTab === 'REJECTED' ? (
+              (!onlineRequisitions || onlineRequisitions.filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'REJECTED').length === 0) ? (
+                <div className="p-12 text-center text-slate-400 italic text-xs">
+                  Nenhuma solicitação recusada.
+                </div>
+              ) : (
+                onlineRequisitions
+                  .filter(r => (r.dentistId === currentUser?.id || r.dentistManualId === userAny?.manualDentistId || r.dentistManualId === activeManualDentistId) && r.status === 'REJECTED')
+                  .map(req => {
+                    return (
+                      <div 
+                        key={req.id} 
+                        className="p-4 rounded-2xl border border-red-200 bg-red-50/20 hover:bg-red-50/40 transition flex flex-col gap-2.5"
+                      >
+                        <div className="flex justify-between items-start gap-1">
+                          <div>
+                            <div className="font-bold text-slate-850 text-xs uppercase">{req.patientName}</div>
+                            {req.items && req.items.length > 0 ? (
+                                <div className="space-y-1 mt-1">
+                                    {req.items.map(item => (
+                                        <div key={item.id} className="text-[10px] font-bold text-slate-700">
+                                            {item.quantity || 1}x {item.serviceName}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="text-[10px] font-bold text-slate-700">{req.serviceName}</div>
+                                    {req.quantity && req.quantity > 0 && (
+                                      <div className="text-[9px] font-bold text-slate-500 mt-0.5">
+                                        Quantidade: {req.quantity} {req.quantity === 1 ? 'item' : 'itens/dentes'}
+                                      </div>
+                                    )}
+                                    {req.selectedVariationIds && req.selectedVariationIds.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {req.selectedVariationIds.map(varId => {
+                                          let foundName = '';
+                                          for (const s of services) {
+                                            if (s.variationGroups) {
+                                              for (const g of s.variationGroups) {
+                                                const opt = g.options?.find((o: any) => o.id === varId);
+                                                if (opt) {
+                                                  foundName = `${g.name}: ${opt.name}`;
+                                                  break;
+                                                }
+                                              }
+                                            }
+                                            if (foundName) break;
+                                          }
+                                          if (!foundName) return null;
+                                          return (
+                                            <span key={varId} className="bg-white text-slate-600 border border-slate-200 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight">
+                                              {foundName}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                    {req.selectedTeeth && req.selectedTeeth.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        <span className="bg-indigo-50 text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight">
+                                          Dentes: {req.selectedTeeth.join(', ')}
+                                        </span>
+                                      </div>
+                                    )}
+                                </>
+                            )}
+                          </div>
+                          
+                          <span className="inline-block text-[8px] font-black px-2 py-0.5 rounded uppercase tracking-wider bg-red-100 text-red-800">
+                            Recusado
+                          </span>
+                        </div>
+
+                        {req.notes && (
+                          <p className="text-[10px] text-slate-500 italic line-clamp-2">
+                            "{req.notes}"
+                          </p>
+                        )}
+
+                        {req.attachments && req.attachments.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {req.attachments.map((file, i) => (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAttachment(file);
+                                  setAllAttachmentsForPreview(req.attachments || []);
+                                }}
+                                className="bg-white hover:bg-slate-50 border border-slate-200 text-[8px] px-1.5 py-0.5 rounded text-indigo-600 hover:text-indigo-800 font-bold truncate max-w-[125px] transition-colors flex items-center gap-1 focus:outline-none"
+                                title="Clique de visualização/download de arquivo"
+                              >
+                                <FileText size={8} className="shrink-0" /> {file.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="flex flex-col gap-1 text-[9px] font-bold uppercase tracking-tight">
+                          <div className="text-slate-500 flex items-center gap-1">
+                            <Clock size={10} className="text-slate-450" /> Enviado em: {parseDateSafely(req.sentAt || req.createdAt)?.toLocaleString('pt-BR') || '---'}
+                          </div>
+                          {req.rejectedAt && (
+                            <div className="text-red-600 flex items-center gap-1">
+                              <Clock size={10} className="text-red-400" /> Recusado em: {parseDateSafely(req.rejectedAt)?.toLocaleString('pt-BR') || '---'}
+                            </div>
+                          )}
+                        </div>
+
+                        {req.rejectionReason && (
+                          <div className="p-2.5 bg-red-50 border border-red-100 rounded-xl text-xs text-red-700">
+                            <span className="font-bold uppercase text-[9px] tracking-wider block mb-0.5 text-red-800">Motivo da Recusa:</span>
+                            {req.rejectionReason}
+                          </div>
+                        )}
+
+                        <div className="flex justify-end mt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleReuseRequisition(req)}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-black uppercase tracking-tight transition flex items-center gap-1 focus:outline-none shadow-sm"
+                          >
+                            <RefreshCw size={10} /> Corrigir e Reenviar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+              )
+            ) : (
+              dentistActiveJobs.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 italic text-xs">
+                  Nenhum caso ativo em produção no laboratório no momento.
+                </div>
+              ) : (
+                dentistActiveJobs.map(job => {
+                  const revealJobStatus = (activeOrganization?.revealJobStatusToDentist ?? false);
+                  
+                  const getStatusColor = (status: string) => {
+                    switch (status) {
+                      case 'WAITING_APPROVAL': return 'bg-amber-50 text-amber-700 border-amber-200';
+                      case 'PENDING': return 'bg-slate-50 text-slate-600 border-slate-200';
+                      case 'IN_PROGRESS': return 'bg-blue-50 text-blue-700 border-blue-200';
+                      case 'COMPLETED': return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                      case 'DELIVERED': return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+                      case 'REJECTED': return 'bg-rose-50 text-rose-700 border-rose-200';
+                      case 'CANCELED': return 'bg-slate-50 text-slate-400 border-slate-200';
+                      case 'RETURNED': return 'bg-orange-50 text-orange-700 border-orange-200';
+                      case 'SECTOR_TRANSITION': return 'bg-violet-50 text-violet-700 border-violet-200';
+                      default: return 'bg-slate-50 text-slate-600 border-slate-200';
+                    }
+                  };
+
+                  const getTranslatedStatus = (status: string) => {
+                    switch (status) {
+                      case 'WAITING_APPROVAL': return 'Aguardando Aprovação';
+                      case 'PENDING': return 'Pendente';
+                      case 'IN_PROGRESS': return 'Em Produção';
+                      case 'COMPLETED': return 'Concluído';
+                      case 'DELIVERED': return 'Entregue';
+                      case 'REJECTED': return 'Rejeitado';
+                      case 'CANCELED': return 'Cancelado';
+                      case 'RETURNED': return 'Devolvido';
+                      case 'SECTOR_TRANSITION': return 'Em Transição';
+                      default: return status;
+                    }
+                  };
+
+                  return (
+                    <div 
+                      key={job.id} 
+                      className="p-4 rounded-2xl border border-slate-100 bg-indigo-50/10 hover:bg-indigo-50/30 transition flex flex-col gap-2.5 relative overflow-hidden"
+                    >
+                      {job.urgency === 'VIP' && (
+                        <div className="absolute top-0 right-0 bg-amber-500 text-white text-[8px] font-black px-2 py-0.5 uppercase rounded-bl-lg">
+                          VIP
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="font-extrabold text-slate-800 text-xs uppercase">{job.patientName}</div>
+                          <div className="text-[9px] font-mono text-indigo-600 font-extrabold mt-0.5">
+                            OS #{job.osNumber || '---'}
+                          </div>
+                        </div>
+                        {revealJobStatus ? (
+                          <span className={`inline-block text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider border ${getStatusColor(job.status)}`}>
+                            {getTranslatedStatus(job.status)}
+                          </span>
+                        ) : (
+                          <span className="inline-block text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider bg-slate-100 text-slate-400 border border-slate-200 inline-flex items-center gap-1" title="Visualização desativada pelo laboratório">
+                            <Lock size={8} /> Oculto
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Info grid */}
+                      <div className="grid grid-cols-2 gap-2 mt-0.5 py-1.5 px-2.5 bg-white border border-slate-50 rounded-xl text-[10px]">
+                        <div>
+                          <span className="text-slate-400 block text-[8px] uppercase font-black">Etapa Atual</span>
+                          <span className="font-bold text-slate-800 uppercase">
+                            {revealJobStatus ? (job.currentSector || 'Triagem') : 'Indisponível'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[8px] uppercase font-black">Previsão</span>
+                          <span className="font-bold text-slate-800">
+                            {revealJobStatus && job.dueDate ? new Date(job.dueDate).toLocaleDateString() : 'Indisponível'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Summary of services/items */}
+                      <div className="text-[10px] text-slate-600 py-1.5 px-2.5 bg-slate-50 border border-slate-100 rounded-xl">
+                        <span className="text-slate-400 block text-[8px] uppercase font-black">Serviços</span>
+                        <div className="font-semibold text-slate-700 mt-0.5 line-clamp-2">
+                          {job.items && job.items.length > 0 
+                            ? job.items.map(item => `${item.quantity || 1}x ${item.name}`).join(', ') 
+                            : 'Nenhum serviço cadastrado'}
+                        </div>
+                      </div>
+
+                      {job.boxNumber && revealJobStatus && job.origin !== 'ONLINE_ORDER' && job.origin !== 'ONLINE_REQUISITION' && (
+                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 mt-0.5">
+                          <span className="w-2 h-2 rounded-full border border-slate-300 inline-block" style={{ backgroundColor: job.boxColor?.hex || '#cbd5e1' }} />
+                          Caixa #{job.boxNumber}
+                        </div>
+                      )}
+
+                      {/* Status and Chat Fields */}
+                      <div className="mt-1 border-t border-dashed border-slate-100 pt-2 space-y-2">
+                        {/* 1. Status do Trabalho Section */}
+                        <div className="flex flex-col gap-1 mt-1">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-slate-400 font-bold uppercase text-[8px]">Status do Trabalho:</span>
+                            {revealJobStatus ? (
+                              <span className="font-black text-slate-700 uppercase">
+                                {getTranslatedStatus(job.status)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-black uppercase text-[8px] flex items-center gap-1">
+                                <Lock size={8} /> Desativado
+                              </span>
+                            )}
+                          </div>
+                          
+                          {job.paymentStatus && (
+                            <div className="flex items-center justify-between text-[10px] mt-1 border-t border-slate-100 pt-1">
+                              <span className="text-slate-400 font-bold uppercase text-[8px]">Status de Pagamento:</span>
+                              <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider border ${
+                                job.paymentStatus === 'VOUCHER' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                                job.paymentStatus === 'AUTHORIZED' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                job.paymentStatus === 'PAID' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                'bg-yellow-50 text-yellow-700 border-yellow-200'
+                              }`}>
+                                {
+                                  job.paymentStatus === 'VOUCHER' ? 'Voucher' :
+                                  job.paymentStatus === 'AUTHORIZED' ? 'Pré-Autorizado' :
+                                  job.paymentStatus === 'PAID' ? 'Pago' :
+                                  'Aguardando Pagamento'
+                                }
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 2. Chat Section */}
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-slate-400 font-bold uppercase text-[8px]">Chat de Acompanhamento:</span>
+                          {job.chatEnabled ? (
+                            <button
+                              type="button"
+                              onClick={() => setChatJob(job)}
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[9px] uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 shadow-sm active:scale-95"
+                            >
+                              <MessageSquare size={10} className="animate-pulse" /> Abrir Chat
+                            </button>
+                          ) : (
+                            <span className="text-slate-400 font-black uppercase text-[8px] flex items-center gap-1" title="Canal de chat desativado para esta OS">
+                              <Lock size={8} /> Desativado
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end mt-1 border-t border-slate-50 pt-1.5">
+                        <button 
+                          type="button"
+                          onClick={() => setPopupJob(job)}
+                          className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 uppercase tracking-wider flex items-center gap-1 cursor-pointer hover:underline"
+                        >
+                          Visualizar Resumo &rarr;
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
+      {popupJob && (() => {
+        const revealJobStatus = (activeOrganization?.revealJobStatusToDentist ?? false);
+        const modalStatusColor = (status: string) => {
+          switch (status) {
+            case 'WAITING_APPROVAL': return 'bg-amber-50 text-amber-700 border-amber-200';
+            case 'PENDING': return 'bg-slate-50 text-slate-600 border-slate-200';
+            case 'IN_PROGRESS': return 'bg-blue-50 text-blue-700 border-blue-200';
+            case 'COMPLETED': return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+            case 'DELIVERED': return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+            case 'REJECTED': return 'bg-rose-50 text-rose-700 border-rose-200';
+            case 'CANCELED': return 'bg-slate-50 text-slate-400 border-slate-200';
+            case 'RETURNED': return 'bg-orange-50 text-orange-700 border-orange-200';
+            case 'SECTOR_TRANSITION': return 'bg-violet-50 text-violet-700 border-violet-200';
+            default: return 'bg-slate-50 text-slate-600 border-slate-200';
+          }
+        };
+
+        const modalStatusTranslation = (status: string) => {
+          switch (status) {
+            case 'WAITING_APPROVAL': return 'Aguardando Aprovação';
+            case 'PENDING': return 'Pendente';
+            case 'IN_PROGRESS': return 'Em Produção';
+            case 'COMPLETED': return 'Concluído';
+            case 'DELIVERED': return 'Entregue';
+            case 'REJECTED': return 'Rejeitado';
+            case 'CANCELED': return 'Cancelado';
+            case 'RETURNED': return 'Devolvido';
+            case 'SECTOR_TRANSITION': return 'Em Transição';
+            default: return status;
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-[200] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
+              
+              {/* Header */}
+              <div className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-sm">Resumo do Caso</h3>
+                  <p className="text-[10px] font-mono text-indigo-600 font-extrabold mt-0.5">
+                    OS #{popupJob.osNumber || '---'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPopupJob(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                {/* Paciente and Basic info */}
+                <div className="bg-indigo-50/10 border border-indigo-50/30 rounded-2xl p-4 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[8px] uppercase tracking-wider font-extrabold text-slate-400 block mb-0.5">Paciente</span>
+                      <span className="font-black text-slate-800 text-sm uppercase">{popupJob.patientName}</span>
+                    </div>
+                    {popupJob.urgency === 'VIP' && (
+                      <span className="bg-amber-500 text-white text-[8px] font-black px-2 py-0.5 uppercase rounded-lg">
+                        VIP
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-100 text-xs">
+                    <div>
+                      <span className="text-[8px] uppercase tracking-wider font-extrabold text-slate-400 block mb-0.5">Etapa / Setor Atual</span>
+                      <span className="font-semibold text-slate-800 uppercase">
+                        {revealJobStatus ? (popupJob.currentSector || 'Triagem') : 'Indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[8px] uppercase tracking-wider font-extrabold text-slate-400 block mb-0.5">Previsão</span>
+                      <span className="font-semibold text-slate-800">
+                        {revealJobStatus && popupJob.dueDate ? new Date(popupJob.dueDate).toLocaleDateString() : 'Indisponível'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Serviços Solicitados */}
+                <div>
+                  <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-2">Serviços Solicitados</span>
+                  <div className="space-y-2">
+                    {popupJob.items && popupJob.items.length > 0 ? (
+                      popupJob.items.map((item, idx) => (
+                        <div key={item.id || idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                          <div className="flex items-center gap-2.5">
+                            <span className="font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                              {item.quantity || 1}x
+                            </span>
+                            <span className="font-extrabold text-slate-700">{item.name}</span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center p-4 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-400 italic">
+                        Nenhum detalhe de serviço disponível
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Anexos */}
+                {popupJob.attachments && popupJob.attachments.length > 0 && (
+                  <div>
+                    <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-2">Arquivos Digitais ({popupJob.attachments.length})</span>
+                    <div className="flex flex-wrap gap-2">
+                      {popupJob.attachments.map((file, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAttachment(file);
+                            setAllAttachmentsForPreview(popupJob.attachments || []);
+                          }}
+                          className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-[10px] font-black uppercase hover:bg-slate-50 hover:border-blue-300 hover:text-blue-600 transition-all shadow-sm focus:outline-none"
+                          title="Clique de visualização/download de arquivo"
+                        >
+                          <FileText size={14} className="shrink-0" /> <span className="max-w-[120px] truncate">{file.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Detalhes de Status */}
+                <div>
+                  <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-2">Campos de Status</span>
+                  <div className="p-4 bg-slate-50 rounded-[20px] border border-slate-100 space-y-3 text-xs">
+                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-200/50">
+                      <span className="text-slate-500 font-bold">Status do Trabalho:</span>
+                      {revealJobStatus ? (
+                        <span className={`px-2.5 py-1 rounded-full uppercase font-black text-[9px] tracking-wider border ${modalStatusColor(popupJob.status)}`}>
+                          {modalStatusTranslation(popupJob.status)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-bold flex items-center gap-1 text-[10px]">
+                          <Lock size={10} /> Oculto pelo laboratório
+                        </span>
+                      )}
+                    </div>
+                    
+                    {popupJob.boxNumber && revealJobStatus && popupJob.origin !== 'ONLINE_ORDER' && popupJob.origin !== 'ONLINE_REQUISITION' && (
+                      <div className="flex justify-between items-center pb-2.5 border-b border-slate-200/50">
+                        <span className="text-slate-500 font-bold">Número da Caixa:</span>
+                        <span className="font-extrabold text-slate-800 flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full border border-slate-300 inline-block" style={{ backgroundColor: popupJob.boxColor?.hex || '#cbd5e1' }} />
+                          Caixa #{popupJob.boxNumber}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-200/50">
+                      <span className="text-slate-500 font-bold">Data de Envio:</span>
+                      <span className="font-extrabold text-slate-800">
+                        {parseDateSafely(popupJob.sentAt || popupJob.createdAt)?.toLocaleString('pt-BR') || '---'}
+                      </span>
+                    </div>
+
+                    {popupJob.acceptedAt && (
+                      <div className="flex justify-between items-center pb-2.5 border-b border-slate-200/50">
+                        <span className="text-slate-500 font-bold">Data de Aceite:</span>
+                        <span className="font-extrabold text-emerald-600">
+                          {parseDateSafely(popupJob.acceptedAt)?.toLocaleString('pt-BR') || '---'}
+                        </span>
+                      </div>
+                    )}
+
+                    {popupJob.rejectedAt && (
+                      <div className="flex justify-between items-center pb-2.5 border-b border-slate-200/50">
+                        <span className="text-slate-500 font-bold">Data de Recusa:</span>
+                        <span className="font-extrabold text-red-650">
+                          {parseDateSafely(popupJob.rejectedAt)?.toLocaleString('pt-BR') || '---'}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 font-bold">Canal de Chat:</span>
+                      <span className="font-black text-slate-700 uppercase text-[10px]">
+                        {popupJob.chatEnabled ? 'Ativo' : 'Desabilitado'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Chat and Actions */}
+                <div className="pt-3 flex gap-3">
+                  {popupJob.chatEnabled ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setChatJob(popupJob);
+                        setPopupJob(null);
+                      }}
+                      className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs uppercase tracking-wider rounded-2xl transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg active:scale-[0.98]"
+                    >
+                      <MessageSquare size={16} className="animate-pulse" /> Abrir Chat de Acompanhamento
+                    </button>
+                  ) : (
+                    <div className="w-full text-center p-3 bg-slate-100 rounded-2xl text-[10px] text-slate-400 font-extrabold uppercase flex items-center justify-center gap-2">
+                      <Lock size={12} /> Chat de Acompanhamento Desabilitado
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPopupJob(null)}
+                  className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 font-bold text-xs uppercase tracking-wider text-slate-700 rounded-xl transition"
+                >
+                  Fechar
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {selectedAttachment && (
+        <AttachmentPreviewModal 
+          file={selectedAttachment}
+          allAttachments={allAttachmentsForPreview}
+          onClose={() => {
+            setSelectedAttachment(null);
+            setAllAttachmentsForPreview([]);
+          }}
+        />
+      )}
+
+      {chatJob && (
+        <div className="fixed inset-0 z-[210] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
+            <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-ping"></span>
+                <h3 className="font-extrabold text-slate-900 text-sm">
+                  Canal Direto com o Lab • OS #{chatJob.osNumber}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChatJob(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-705 hover:bg-slate-100 rounded-xl transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden p-2 bg-slate-50 max-h-[75vh]">
+              <ChatSystem job={chatJob} orgId={activeOrganization?.id || chatJob.organizationId || ''} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

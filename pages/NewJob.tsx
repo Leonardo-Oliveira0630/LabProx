@@ -1,0 +1,1441 @@
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
+import { useApp } from '../context/AppContext';
+import { JobType, UserRole, JobStatus, UrgencyLevel, Job, JobItem, VariationOption, VariationGroup, JobNature, User as UserType, ManualDentist, User } from '../types';
+import { getContrastColor } from '../services/mockData';
+import { formatTeethRange } from '../utils/toothUtils';
+// Added Crown to the lucide-react imports to fix line 404 error
+import { Odontogram } from "../components/Odontogram";
+import { Plus, Trash2, Save, User as UserIcon, Box, FileText, CheckCircle, Search, RefreshCw, ArrowRight, Printer, X, FileCheck, DollarSign, Check, Calendar, AlertTriangle, Stethoscope, ChevronDown, Layers, Percent, Edit3, ShieldAlert, SearchIcon, Tag, AlertCircle, Crown, Package } from 'lucide-react';
+
+import * as api from '../services/firebaseService';
+
+type EntryType = 'NEW' | 'CONTINUATION';
+
+
+// Colors for different job types in odontogram
+const JOB_COLORS = [
+  '#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e', 
+  '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#f43f5e'
+];
+const getJobTypeColor = (jobTypeId: string, jobTypeName?: string) => {
+  if (jobTypeName) {
+    const nameLower = jobTypeName.toLowerCase();
+    if (nameLower.includes('coroa monolítica') || nameLower.includes('coroa monolitica')) return '#3b82f6'; // blue
+    if (nameLower.includes('onlay') && nameLower.includes('emax')) return '#f97316'; // orange
+    if (nameLower.includes('faceta')) return '#a855f7'; // purple
+    if (nameLower.includes('lente')) return '#d946ef'; // fuchsia/pink
+    if (nameLower.includes('protese') || nameLower.includes('prótese')) return '#10b981'; // emerald/green
+    if (nameLower.includes('coroa')) return '#0ea5e9'; // light blue
+  }
+
+  let hash = 0;
+  for (let i = 0; i < jobTypeId.length; i++) {
+    hash = jobTypeId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return JOB_COLORS[Math.abs(hash) % JOB_COLORS.length];
+};
+
+export const NewJob = () => {
+  const { addJob, updateJob, jobs, jobTypes, currentUser, triggerPrint, allUsers, manualDentists, boxColors, priceTables, inventoryItems, updateInventoryItem, updateOnlineRequisition } = useApp();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+
+
+  const jobTypeDropdownRef = useRef<HTMLDivElement>(null);
+
+  // --- Global States ---
+  const [entryType, setEntryType] = useState<EntryType>((location.state?.entryType as EntryType) || 'NEW');
+  const [patientName, setPatientName] = useState((location.state?.patientName || '').toUpperCase());
+  const [selectedDentistObj, setSelectedDentistObj] = useState<any | null>(null);
+  const [selectedDentistId, setSelectedDentistId] = useState(location.state?.dentistId || '');
+  const [dentistName, setDentistName] = useState((location.state?.dentistName || '').toUpperCase());
+  const [dentistSearchQuery, setDentistSearchQuery] = useState((location.state?.dentistName || '').toUpperCase());
+  const [showDentistSuggestions, setShowDentistSuggestions] = useState(false);
+  const [jobTypeSearchQuery, setJobTypeSearchQuery] = useState('');
+  const [showJobTypeSuggestions, setShowJobTypeSuggestions] = useState(false);
+  const [isSearchingJobType, setIsSearchingJobType] = useState(false);
+  const [osNumber, setOsNumber] = useState(location.state?.osNumber || '');
+  const [dueDate, setDueDate] = useState('');
+  const [boxNumber, setBoxNumber] = useState('');
+  
+  const activeJobsWithSameBox = useMemo(() => {
+    if (!boxNumber.trim()) return [];
+    return jobs.filter(j => 
+        j.boxNumber === boxNumber.trim() && 
+        ![JobStatus.COMPLETED, JobStatus.DELIVERED, JobStatus.CANCELED, JobStatus.REJECTED].includes(j.status)
+    );
+  }, [boxNumber, jobs]);
+  const [selectedColorId, setSelectedColorId] = useState('');
+  const [urgency, setUrgency] = useState<UrgencyLevel>(UrgencyLevel.NORMAL);
+  const [notes, setNotes] = useState(location.state?.notes || '');
+  const [lastJobFound, setLastJobFound] = useState<Job | null>(null);
+  const loadedJobIdRef = useRef<string | null>(null);
+  const [addedItems, setAddedItems] = useState<JobItem[]>(location.state?.items || []);
+  const odontogramProps = useMemo(() => {
+    const colors: Record<string, string> = {};
+    const disabled: string[] = [];
+    
+    addedItems.forEach(item => {
+      if (item.selectedTeeth && item.selectedTeeth.length > 0) {
+        const color = getJobTypeColor(item.jobTypeId, item.name);
+        item.selectedTeeth.forEach(t => {
+          colors[t] = color;
+        });
+      }
+    });
+    return { colors, disabled };
+  }, [addedItems]);
+  const [addedProducts, setAddedProducts] = useState<import('../types').JobProduct[]>(location.state?.products || []);
+  const [lastCreatedJob, setLastCreatedJob] = useState<Job | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showOsConflictPopup, setShowOsConflictPopup] = useState(false);
+  const [suggestedOsNumber, setSuggestedOsNumber] = useState('');
+  
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [productQuantity, setProductQuantity] = useState(1);
+  const [productManualPrice, setProductManualPrice] = useState<number | null>(null);
+  const [productDiscountPercent, setProductDiscountPercent] = useState<number>(0);
+
+  useEffect(() => {
+    // If state passed a dentistId, we need to find it and populate names
+    if (location.state?.dentistId) {
+      const dentist = allUsers.find(u => u.id === location.state.dentistId) || 
+                      manualDentists.find(d => d.id === location.state.dentistId || (d as any).userId === location.state.dentistId);
+      if (dentist) {
+        setSelectedDentistId(dentist.id);
+        setSelectedDentistObj(dentist);
+        setDentistName(dentist.name.toUpperCase());
+        setDentistSearchQuery(dentist.name.toUpperCase());
+      } else if (location.state?.dentistName) {
+        // Fallback for manual entry
+        setDentistName(location.state.dentistName.toUpperCase());
+        setDentistSearchQuery(location.state.dentistName.toUpperCase());
+      }
+    }
+  }, [location.state, allUsers, manualDentists]);
+
+  useEffect(() => {
+    if (boxColors.length > 0 && !selectedColorId) {
+        setSelectedColorId(boxColors[0].id);
+    }
+  }, [boxColors]);
+
+  const [itemNature, setItemNature] = useState<JobNature>('NORMAL');
+  const [selectedTypeId, setSelectedTypeId] = useState(() => {
+    const visible = jobTypes.filter(t => t.isVisibleInternally !== false);
+    return visible[0]?.id || jobTypes[0]?.id || '';
+  });
+  const [hasSetInitialType, setHasSetInitialType] = useState(false);
+  const [quantity, setQuantity] = useState(1);
+  const [itemColor, setItemColor] = useState('');
+  const [selectedVariations, setSelectedVariations] = useState<Record<string, string | string[]>>({}); 
+  const [variationTextValues, setVariationTextValues] = useState<Record<string, string>>({}); 
+  const [itemSelectedTeeth, setItemSelectedTeeth] = useState<string[]>([]);
+  const [commissionDisabled, setCommissionDisabled] = useState(false);
+  const [manualPrice, setManualPrice] = useState<number | null>(null);
+  const [discountPercent, setDiscountPercent] = useState<number>(0);
+
+  const connectedDentists = useMemo(() => allUsers.filter(u => u.role === UserRole.CLIENT), [allUsers]);
+  const activeJobType = useMemo(() => jobTypes.find(t => t.id === selectedTypeId), [selectedTypeId, jobTypes]);
+
+  useEffect(() => {
+    if (!hasSetInitialType && jobTypes.length > 0) {
+      const visible = jobTypes.filter(t => t.isVisibleInternally !== false);
+      setSelectedTypeId(visible[0]?.id || jobTypes[0]?.id || '');
+      setHasSetInitialType(true);
+    }
+  }, [jobTypes, hasSetInitialType]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDentistSuggestions(false);
+      }
+      if (jobTypeDropdownRef.current && !jobTypeDropdownRef.current.contains(event.target as Node)) {
+        setShowJobTypeSuggestions(false);
+        setIsSearchingJobType(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const suggestions = useMemo(() => {
+    if (!dentistSearchQuery) return [];
+    const query = dentistSearchQuery.toLowerCase();
+    const online = connectedDentists.map(d => ({ ...d, type: 'ONLINE' }));
+    const offline = manualDentists.map(d => ({ ...d, type: 'OFFLINE' }));
+    return [...online, ...offline].filter(d => 
+        d.name.toLowerCase().includes(query) || (d.clinicName && d.clinicName.toLowerCase().includes(query))
+    ).slice(0, 8); 
+  }, [dentistSearchQuery, connectedDentists, manualDentists]);
+
+  const filteredJobTypes = useMemo(() => {
+    const visible = jobTypes.filter(t => t.isVisibleInternally !== false);
+    if (!jobTypeSearchQuery) return visible.slice(0, 10);
+    const query = jobTypeSearchQuery.toLowerCase();
+    return visible.filter(t => t.name.toLowerCase().includes(query)).slice(0, 10);
+  }, [jobTypeSearchQuery, jobTypes]);
+
+  const calculatedBasePrice = useMemo(() => {
+    if (!activeJobType) return 0;
+    if (itemNature === 'REPETITION' || itemNature === 'ADJUSTMENT') return 0;
+    
+    let basePrice = activeJobType.basePrice;
+    let dentistDiscountRate = 0;
+    let customPriceOverride: number | null = null;
+    
+    // Check for Price Table or Custom Pricing
+    if (selectedDentistObj) {
+        if (selectedDentistObj.isCustomPricing) {
+            // Priority: Explicit Custom Prices
+            const custom = selectedDentistObj.customPrices?.find((p: any) => p.jobTypeId === activeJobType.id);
+            if (custom) {
+                if (custom.fixedPrice !== undefined && custom.fixedPrice > 0) {
+                    basePrice = custom.fixedPrice;
+                    dentistDiscountRate = 0;
+                } else if (custom.discountPercent !== undefined) {
+                    dentistDiscountRate = custom.discountPercent / 100;
+                } else if (custom.price !== undefined) {
+                    basePrice = custom.price;
+                    dentistDiscountRate = 0;
+                }
+            } else if (selectedDentistObj.globalDiscountPercent) {
+                // Fallback to Global Discount if custom pricing is ON but no specific price for this jobType
+                dentistDiscountRate = selectedDentistObj.globalDiscountPercent / 100;
+            }
+        }
+        if (selectedDentistObj.priceTableId) {
+            const table = priceTables.find(t => t.id === selectedDentistObj.priceTableId);
+            if (table && table.prices[activeJobType.id]?.basePrice !== undefined) {
+                basePrice = table.prices[activeJobType.id].basePrice;
+            }
+        }
+    }
+
+    let discountableSum = basePrice;
+    let exemptSum = 0;
+    const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+    
+    allSelectedOptionIds.forEach(selectedId => {
+      activeJobType.variationGroups.forEach(group => {
+        const option = group.options.find(opt => opt.id === selectedId);
+        if (option) {
+            let modifier = option.priceModifier;
+            
+            // Check if Price Table has a specific modifier for this variation
+            if (selectedDentistObj && !selectedDentistObj.isCustomPricing && selectedDentistObj.priceTableId) {
+                const table = priceTables.find(t => t.id === selectedDentistObj.priceTableId);
+                if (table && table.prices[activeJobType.id]?.variations?.[option.id] !== undefined) {
+                    modifier = table.prices[activeJobType.id].variations[option.id];
+                }
+            }
+
+            if (option.isDiscountExempt) exemptSum += modifier;
+            else discountableSum += modifier;
+        }
+      });
+    });
+
+    return (discountableSum * (1 - dentistDiscountRate)) + exemptSum;
+  }, [selectedVariations, activeJobType, selectedDentistObj, priceTables]);
+
+  const calculateItemPriceWithDentist = (
+    jobType: any | undefined,
+    selectedVariationIds: string[],
+    dentist: any | null,
+    priceTables: any[]
+  ) => {
+    if (!jobType) return 0;
+    
+    let basePrice = jobType.basePrice;
+    let dentistDiscountRate = 0;
+    
+    if (dentist) {
+        if (dentist.priceTableId) {
+            const table = priceTables.find(t => t.id === dentist.priceTableId);
+            if (table && table.prices[jobType.id]?.basePrice !== undefined) {
+                basePrice = table.prices[jobType.id].basePrice;
+            }
+        }
+        if (dentist.isCustomPricing) {
+            const custom = dentist.customPrices?.find((p: any) => p.jobTypeId === jobType.id);
+            if (custom) {
+                if (custom.fixedPrice !== undefined && custom.fixedPrice > 0) {
+                    basePrice = custom.fixedPrice;
+                    dentistDiscountRate = 0;
+                } else if (custom.discountPercent !== undefined) {
+                    dentistDiscountRate = custom.discountPercent / 100;
+                } else if (custom.price !== undefined) {
+                    basePrice = custom.price;
+                    dentistDiscountRate = 0;
+                }
+            } else if (dentist.globalDiscountPercent) {
+                dentistDiscountRate = dentist.globalDiscountPercent / 100;
+            }
+        }
+    }
+
+    let discountableSum = basePrice;
+    let exemptSum = 0;
+    
+    selectedVariationIds.forEach(selectedId => {
+      jobType.variationGroups?.forEach((group: any) => {
+        const option = group.options.find((opt: any) => opt.id === selectedId);
+        if (option) {
+            let modifier = option.priceModifier;
+            
+            if (dentist && dentist.priceTableId) {
+                const table = priceTables.find(t => t.id === dentist.priceTableId);
+                if (table && table.prices[jobType.id]?.variations?.[option.id] !== undefined) {
+                    modifier = table.prices[jobType.id].variations[option.id];
+                }
+            }
+
+            if (option.isDiscountExempt) exemptSum += modifier;
+            else discountableSum += modifier;
+        }
+      });
+    });
+
+    return (discountableSum * (1 - dentistDiscountRate)) + exemptSum;
+  };
+
+  useEffect(() => {
+    if (addedItems.length > 0) {
+      const updated = addedItems.map(item => {
+        if (item.nature === 'REPETITION' || item.nature === 'ADJUSTMENT') {
+          return {
+            ...item,
+            price: 0,
+            basePriceBeforeDiscount: 0
+          };
+        }
+        
+        const jobType = jobTypes.find(t => t.id === item.jobTypeId);
+        const correctPrice = calculateItemPriceWithDentist(
+          jobType,
+          item.selectedVariationIds || [],
+          selectedDentistObj,
+          priceTables
+        );
+        let appliedTableName = 'Tabela Padrão';
+        if (selectedDentistObj?.isCustomPricing) {
+            appliedTableName = 'Customizado (Dentista)';
+        } else if (selectedDentistObj?.priceTableId) {
+            const table = priceTables.find(t => t.id === selectedDentistObj.priceTableId);
+            if (table) appliedTableName = table.name;
+        }
+        
+        return {
+          ...item,
+          price: correctPrice,
+          basePriceBeforeDiscount: correctPrice,
+          appliedPriceTable: appliedTableName
+        };
+      });
+      
+      const hasChanges = updated.some((item, i) => item.price !== addedItems[i].price || item.appliedPriceTable !== addedItems[i].appliedPriceTable);
+      if (hasChanges) {
+        setAddedItems(updated);
+      }
+    }
+  }, [selectedDentistObj, priceTables, jobTypes]);
+
+  const finalItemPrice = useMemo(() => {
+    let price = manualPrice !== null ? manualPrice : calculatedBasePrice;
+    if (discountPercent > 0) price = price * (1 - discountPercent / 100);
+    return price;
+  }, [calculatedBasePrice, manualPrice, discountPercent]);
+
+  const disabledOptions = useMemo(() => {
+    if (!activeJobType) return new Set<string>();
+    const disabled = new Set<string>();
+    const allSelectedOptionIds = Object.values(selectedVariations).flat();
+    allSelectedOptionIds.forEach(selectedId => {
+      activeJobType.variationGroups.forEach(group => {
+        const triggeringOption = group.options.find(opt => opt.id === selectedId);
+        if (triggeringOption && triggeringOption.disablesOptions) triggeringOption.disablesOptions.forEach(idToDisable => { disabled.add(idToDisable); });
+      });
+    });
+    return disabled;
+  }, [selectedVariations, activeJobType]);
+  
+  useEffect(() => {
+    if (disabledOptions.size === 0) return;
+    let changesMade = false;
+    const newSelections = JSON.parse(JSON.stringify(selectedVariations)); 
+    const newTextValues = { ...variationTextValues };
+    for (const groupId in newSelections) {
+      const selection = newSelections[groupId];
+      if (Array.isArray(selection)) {
+        const validSelections = selection.filter(optionId => !disabledOptions.has(optionId));
+        if (validSelections.length !== selection.length) { newSelections[groupId] = validSelections; changesMade = true; }
+      } else { if (disabledOptions.has(selection)) { delete newSelections[groupId]; changesMade = true; } }
+    }
+    Object.keys(newTextValues).forEach(optId => { if (disabledOptions.has(optId)) { delete newTextValues[optId]; changesMade = true; } });
+    if (changesMade) { setSelectedVariations(newSelections); setVariationTextValues(newTextValues); }
+  }, [disabledOptions, selectedVariations, variationTextValues]);
+
+  const generateNextNewOs = () => {
+    for (let i = 0; i < jobs.length; i++) {
+      const osStr = String(jobs[i].osNumber || '');
+      const basePart = osStr.split('-')[0].replace(/\D/g, '');
+      const num = parseInt(basePart, 10);
+      if (!isNaN(num) && num > 0) {
+        return (num + 1).toString().padStart(4, '0');
+      }
+    }
+    return '0001';
+  };
+
+  const initialMountRef = useRef(true);
+
+  useEffect(() => {
+    if (initialMountRef.current) {
+      initialMountRef.current = false;
+      const d = new Date(); d.setDate(d.getDate() + 3); setDueDate(d.toISOString().split('T')[0]);
+      if (entryType === 'NEW' && !location.state?.osNumber) {
+        setOsNumber(generateNextNewOs());
+      }
+      return;
+    }
+
+    if (entryType === 'NEW') {
+        setOsNumber(generateNextNewOs());
+        setPatientName(''); setDentistName(''); setSelectedDentistId(''); setSelectedDentistObj(null); setDentistSearchQuery(''); setNotes('');
+        setLastJobFound(null);
+        loadedJobIdRef.current = null;
+    } else {
+        // CONTINUATION - allow loading from previous sheet/card
+        setOsNumber('');
+        setPatientName('');
+        setDentistName('');
+        setSelectedDentistId('');
+        setSelectedDentistObj(null);
+        setDentistSearchQuery('');
+        setNotes('');
+        setLastJobFound(null);
+        loadedJobIdRef.current = null;
+    }
+  }, [entryType]); 
+// Removed 'jobs' from dependency array to prevent form clearing
+
+  // Update OS number when jobs load initially
+  useEffect(() => {
+    if (jobs.length > 0 && entryType === 'NEW') {
+        const nextOs = generateNextNewOs();
+        const exists = jobs.find(j => j.osNumber === osNumber);
+        if (osNumber === '0001' || (exists && !osNumber.includes('-'))) {
+            setOsNumber(nextOs);
+        }
+    }
+  }, [jobs]);
+
+  const handleOsNumberBlur = () => {
+      if (!osNumber) return;
+      if (osNumber.includes('-')) {
+          const exists = jobs.find(j => j.osNumber === osNumber);
+          if (exists) {
+              const baseOs = osNumber.split('-')[0];
+              const baseJobs = jobs.filter(j => String(j.osNumber || '').startsWith(baseOs));
+              let nextSeq = 1;
+              baseJobs.forEach(j => {
+                  const jOs = String(j.osNumber || '');
+                  if (jOs.includes('-')) {
+                      const seq = parseInt(jOs.split('-')[1]);
+                      if (!isNaN(seq) && seq >= nextSeq) {
+                          nextSeq = seq + 1;
+                      }
+                  } else {
+                      if (nextSeq === 1) nextSeq = 2;
+                  }
+              });
+              setOsNumber(`${baseOs}-${nextSeq}`);
+          }
+      } else {
+          const exists = jobs.find(j => j.osNumber === osNumber);
+          if (exists) {
+              if (entryType === 'CONTINUATION') {
+                  const baseOs = osNumber;
+                  const baseJobs = jobs.filter(j => String(j.osNumber || '').startsWith(baseOs));
+                  let nextSeq = 1;
+                  baseJobs.forEach(j => {
+                      const jOs = String(j.osNumber || '');
+                      if (jOs.includes('-')) {
+                          const seq = parseInt(jOs.split('-')[1]);
+                          if (!isNaN(seq) && seq >= nextSeq) {
+                              nextSeq = seq + 1;
+                          }
+                      } else {
+                          if (nextSeq === 1) nextSeq = 2;
+                      }
+                  });
+                  setOsNumber(`${baseOs}-${nextSeq}`);
+              } else {
+                  setSuggestedOsNumber(generateNextNewOs());
+                  setShowOsConflictPopup(true);
+              }
+          }
+      }
+  };
+
+  const selectDentist = (dentist: any) => {
+    setSelectedDentistId(dentist.id); 
+    setSelectedDentistObj(dentist);
+    setDentistName(dentist.name.toUpperCase()); 
+    setDentistSearchQuery(dentist.name.toUpperCase()); 
+    setShowDentistSuggestions(false);
+  };
+
+  const handleManualDentistEntry = () => {
+    const capsQuery = dentistSearchQuery.toUpperCase();
+    setSelectedDentistId('manual-entry'); 
+    setSelectedDentistObj(null); 
+    setDentistName(capsQuery); 
+    setDentistSearchQuery(capsQuery); 
+    setShowDentistSuggestions(false);
+  };
+
+  // Helper to load previous job data when matches are found
+  const loadPreviousJobData = (prevJob: Job) => {
+    if (loadedJobIdRef.current === prevJob.id) return;
+    loadedJobIdRef.current = prevJob.id;
+    setLastJobFound(prevJob);
+
+    // Populate patient name if empty
+    if (!patientName.trim()) {
+      setPatientName(prevJob.patientName.toUpperCase());
+    }
+
+    // Populate dentist
+    if (!selectedDentistId) {
+      setSelectedDentistId(prevJob.dentistId);
+      const dentist = allUsers.find(u => u.id === prevJob.dentistId) || 
+                      manualDentists.find(d => d.id === prevJob.dentistId || (d as any).userId === prevJob.dentistId);
+      if (dentist) {
+        setSelectedDentistObj(dentist);
+        setDentistName(dentist.name.toUpperCase());
+        setDentistSearchQuery(dentist.name.toUpperCase());
+      } else {
+        setDentistName(prevJob.dentistName.toUpperCase());
+        setDentistSearchQuery(prevJob.dentistName.toUpperCase());
+      }
+    }
+
+    // Accumulate observations: setting the notes field with pre-existing notes
+    if (prevJob.notes) {
+      if (!notes || notes.trim() === '') {
+        setNotes(prevJob.notes);
+      } else if (!notes.toLowerCase().includes(prevJob.notes.toLowerCase())) {
+        // Safe append if they already entered some short text, keeping it formatted
+        setNotes(`${prevJob.notes}\n---\n${notes}`);
+      }
+    }
+  };
+
+  useEffect(() => {
+    // Only detect previous information if it's a repetition, adjustment, or continuation
+    const isContinuationOrAdjustment = 
+      entryType === 'CONTINUATION' || 
+      itemNature === 'REPETITION' || 
+      itemNature === 'ADJUSTMENT';
+
+    if (!isContinuationOrAdjustment) {
+      setLastJobFound(null);
+      loadedJobIdRef.current = null;
+      return;
+    }
+
+    // 1. First, search by OS Number/Card number (numerical base part before hyphens)
+    if (osNumber) {
+      const baseOs = osNumber.split('-')[0].trim();
+      if (baseOs && baseOs !== '0000' && baseOs !== '0001') {
+        const foundByOs = [...jobs]
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .find(j => {
+            const jBaseOs = String(j.osNumber || '').split('-')[0].trim();
+            return jBaseOs === baseOs || j.osNumber === osNumber;
+          });
+
+        if (foundByOs) {
+          loadPreviousJobData(foundByOs);
+          return;
+        }
+      }
+    }
+
+    // 2. Second, search by Patient Name (with optional dentist filter)
+    if (patientName.trim()) {
+      const patientClean = patientName.trim().toLowerCase();
+      
+      const foundByPatientAndDentist = [...jobs]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .find(j => {
+          const nameMatches = j.patientName.toLowerCase() === patientClean;
+          const dentistMatches = selectedDentistId ? j.dentistId === selectedDentistId : true;
+          return nameMatches && dentistMatches;
+        });
+
+      if (foundByPatientAndDentist) {
+        loadPreviousJobData(foundByPatientAndDentist);
+        return;
+      }
+
+      // Fallback: search by patient name only across all dentists when selectedDentistId is empty
+      if (!selectedDentistId) {
+        const foundByPatientOnly = [...jobs]
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .find(j => j.patientName.toLowerCase() === patientClean);
+
+        if (foundByPatientOnly) {
+          loadPreviousJobData(foundByPatientOnly);
+          return;
+        }
+      }
+    }
+  }, [entryType, itemNature, osNumber, patientName, selectedDentistId, jobs]);
+
+  const handleVariationChange = (group: VariationGroup, optionId: string) => {
+    setSelectedVariations(prev => {
+      const newSelections = { ...prev };
+      const currentSelection = newSelections[group.id];
+      if (group.selectionType === 'SINGLE') newSelections[group.id] = optionId;
+      else { 
+        const selectionArray = Array.isArray(currentSelection) ? [...currentSelection] : [];
+        const index = selectionArray.indexOf(optionId);
+        if (index > -1) selectionArray.splice(index, 1); else selectionArray.push(optionId);
+        newSelections[group.id] = selectionArray;
+      }
+      return newSelections;
+    });
+  };
+
+  const handleTextVariationChange = (group: VariationGroup, optionId: string, value: string) => {
+      setVariationTextValues(prev => ({ ...prev, [optionId]: value }));
+      setSelectedVariations(prev => {
+          const newSelections = { ...prev };
+          const current = (newSelections[group.id] as string[]) || [];
+          if (value.trim().length > 0) { if (!current.includes(optionId)) newSelections[group.id] = [...current, optionId]; } 
+          else newSelections[group.id] = current.filter(id => id !== optionId);
+          return newSelections;
+      });
+  };
+  
+  useEffect(() => { setSelectedVariations({}); setVariationTextValues({}); setItemSelectedTeeth([]); setManualPrice(null); setDiscountPercent(0); setItemNature('NORMAL'); }, [selectedTypeId]);
+
+  const handleAddProduct = () => {
+    if (!selectedProductId) return;
+    const invItem = inventoryItems.find(i => i.id === selectedProductId);
+    if (!invItem) return;
+    
+    if (invItem.currentStock < productQuantity) {
+        alert("Quantidade insuficiente no estoque.");
+        return;
+    }
+
+    const basePrice = productManualPrice !== null ? productManualPrice : invItem.sellPrice;
+    const finalPrice = basePrice * (1 - (productDiscountPercent / 100));
+
+    const newProd = {
+        id: Math.random().toString(),
+        inventoryItemId: invItem.id,
+        name: invItem.name,
+        quantity: productQuantity,
+        unitPrice: finalPrice,
+        basePriceBeforeDiscount: basePrice,
+        appliedDiscount: productDiscountPercent,
+        dentistOwnerId: invItem.dentistOwnerId
+    };
+
+    setAddedProducts([...addedProducts, newProd]);
+    setSelectedProductId('');
+    setProductQuantity(1);
+    setProductManualPrice(null);
+    setProductDiscountPercent(0);
+    setIsAddingProduct(false);
+  };
+
+  const handleRemoveProduct = (id: string) => {
+    setAddedProducts(addedProducts.filter(p => p.id !== id));
+  };
+
+  const handleAddItem = () => {
+    if (!activeJobType) return;
+    const allSelectedOptionIds = Object.values(selectedVariations).flat() as string[];
+    
+    let appliedTableName = 'Tabela Padrão';
+    if (selectedDentistObj?.isCustomPricing) {
+        appliedTableName = 'Customizado (Dentista)';
+    } else if (selectedDentistObj?.priceTableId) {
+        const table = priceTables.find(t => t.id === selectedDentistObj.priceTableId);
+        if (table) appliedTableName = table.name;
+    }
+
+    const newItem: JobItem = { 
+        id: `item_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`, 
+        jobTypeId: activeJobType.id, 
+        name: activeJobType.name, 
+        quantity: quantity, 
+        nature: itemNature, 
+        price: finalItemPrice, 
+        basePriceBeforeDiscount: manualPrice !== null ? manualPrice : calculatedBasePrice,
+        appliedDiscount: discountPercent,
+        appliedPriceTable: appliedTableName,
+        selectedVariationIds: allSelectedOptionIds, 
+        variationValues: variationTextValues, 
+        commissionDisabled: commissionDisabled, selectedTeeth: itemSelectedTeeth && itemSelectedTeeth.length > 0 ? itemSelectedTeeth : undefined, color: itemColor || undefined 
+    };
+    setAddedItems([...addedItems, newItem]);
+    setQuantity(1); setItemColor(''); setSelectedVariations({}); setVariationTextValues({}); setItemSelectedTeeth([]); setCommissionDisabled(false); setManualPrice(null); setDiscountPercent(0); setItemNature('NORMAL');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (activeJobsWithSameBox.length > 0) {
+        alert('A caixa ' + boxNumber + ' já está em uso por outro caso em aberto. Finalize-o antes de usar esta caixa.');
+        return;
+    }
+    e.preventDefault();
+    
+    // Check conflicts before submitting
+    let finalOsNumber = osNumber;
+    if (osNumber.includes('-')) {
+        const exists = jobs.find(j => j.osNumber === osNumber);
+        if (exists) {
+            const baseOs = osNumber.split('-')[0];
+            const baseJobs = jobs.filter(j => String(j.osNumber || '').startsWith(baseOs));
+            let nextSeq = 1;
+            baseJobs.forEach(j => {
+                const jOs = String(j.osNumber || '');
+                if (jOs.includes('-')) {
+                    const seq = parseInt(jOs.split('-')[1]);
+                    if (!isNaN(seq) && seq >= nextSeq) {
+                        nextSeq = seq + 1;
+                    }
+                } else {
+                    if (nextSeq === 1) nextSeq = 2;
+                }
+            });
+            finalOsNumber = `${baseOs}-${nextSeq}`;
+            setOsNumber(finalOsNumber); // Update visually
+        }
+    } else {
+        const exists = jobs.find(j => j.osNumber === osNumber);
+        if (exists) {
+            setSuggestedOsNumber(generateNextNewOs());
+            setShowOsConflictPopup(true);
+            return; // STOP!
+        }
+    }
+
+    // VALIDAÇÕES DE PRODUÇÃO
+    if (!finalOsNumber) { alert("O número da OS é obrigatório."); return; }
+    if (!patientName.trim()) { alert("O nome do paciente é obrigatório."); return; }
+    if (!selectedDentistId || !dentistName.trim()) { alert("A seleção do dentista é obrigatória."); return; }
+
+    // New check: Is the dentist blocked?
+    const dentist = allUsers.find(u => u.id === selectedDentistId) || manualDentists.find(d => d.id === selectedDentistId);
+    if (dentist?.isBlocked) {
+      alert("Este cliente está BLOQUEADO por limite de fatura ou restrição administrativa. Não é possível cadastrar novos trabalhos.");
+      return;
+    }
+
+    if (addedItems.length === 0) { alert("Adicione pelo menos um serviço ao caso."); return; }
+    if (!currentUser) return;
+
+    const itemsTotal = addedItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+    const productsTotal = addedProducts.reduce((acc, p) => acc + (p.unitPrice * p.quantity), 0);
+    const totalValue = itemsTotal + productsTotal;
+    const boxColor = boxColors.find(c => c.id === selectedColorId);
+    const initialSector = currentUser.sector || 'Recepção';
+    
+    const finalOrigin = location.state?.origin || 'MANUAL';
+    const requisitionId = location.state?.onlineRequisitionId;
+    const onlineOrderId = location.state?.onlineOrderId;
+
+    let historyAction = `Caso registrado manualmente via ${initialSector}`;
+    if (finalOrigin === 'ONLINE_REQUISITION' && requisitionId) {
+        historyAction = `Requisição online aceita e cadastrada como Ordem de Serviço por ${currentUser.name} via ${initialSector}`;
+    } else if (finalOrigin === 'ONLINE_ORDER' && onlineOrderId) {
+        historyAction = `Pedido web aprovado e oficializado na produção interna por ${currentUser.name} via ${initialSector}`;
+    }
+
+    const computedDentistUserId = (finalOrigin === 'ONLINE_REQUISITION' && location.state?.dentistId)
+        ? location.state.dentistId
+        : (selectedDentistObj ? (
+            (selectedDentistObj as any).userId || 
+            ((selectedDentistObj as any).role === 'CLIENT' ? selectedDentistObj.id : '')
+          ) : '');
+
+    const newJob: Omit<Job, 'id' | 'organizationId'> = { 
+        osNumber: finalOsNumber, 
+        patientName: patientName.trim().toUpperCase(), 
+        dentistId: selectedDentistId, 
+        dentistName: dentistName.trim().toUpperCase(), 
+        status: JobStatus.PENDING, 
+        paymentStatus: location.state?.paymentStatus || 'PENDING', 
+        urgency, 
+        origin: finalOrigin,
+        dentistUserId: computedDentistUserId,
+        items: addedItems, 
+        products: addedProducts,
+        attachments: location.state?.attachments || [],
+        history: [{ id: Math.random().toString(), timestamp: new Date(), action: historyAction, userId: currentUser.id, userName: currentUser.name, sector: initialSector }], 
+        sectorMovements: [{
+            id: Math.random().toString(),
+            sector: initialSector,
+            entryTime: new Date(),
+            entryUserId: currentUser.id,
+            entryUserName: currentUser.name
+        }],
+        createdAt: new Date(), 
+        dueDate: new Date(dueDate), 
+        boxNumber, 
+        boxColor, 
+        currentSector: initialSector, 
+        totalValue, 
+        notes,
+        chatEnabled: false
+    };
+
+    setIsSubmitting(true);
+    try {
+        if (finalOrigin === 'ONLINE_ORDER' && onlineOrderId) {
+            // First approve order via the backend function to handle payment capture/status changes
+            await api.apiManageOrderDecision(currentUser.organizationId || '', onlineOrderId, 'APPROVE');
+
+            const existingJobRef = jobs.find(j => j.id === onlineOrderId);
+            const existingHistory = existingJobRef?.history || [];
+            const existingMovements = existingJobRef?.sectorMovements || [];
+
+            await updateJob(onlineOrderId, {
+                osNumber: finalOsNumber,
+                patientName: patientName.trim().toUpperCase(),
+                dentistId: selectedDentistId,
+                dentistName: dentistName.trim().toUpperCase(),
+                status: JobStatus.PENDING,
+                urgency,
+                items: addedItems,
+                products: addedProducts,
+                notes,
+                dueDate: new Date(dueDate),
+                boxNumber,
+                boxColor,
+                currentSector: initialSector,
+                acceptedAt: new Date(),
+                sectorMovements: [...(existingMovements || []).filter(Boolean), {
+                    id: Math.random().toString(),
+                    sector: initialSector,
+                    entryTime: new Date(),
+                    entryUserId: currentUser.id,
+                    entryUserName: currentUser.name
+                }],
+                history: [...(existingHistory || []).filter(Boolean), {
+                    id: Math.random().toString(),
+                    timestamp: new Date(),
+                    action: historyAction,
+                    userId: currentUser.id,
+                    userName: currentUser.name,
+                    sector: initialSector
+                }]
+            });
+
+            // Deduct stock for each added product
+            for (const prod of addedProducts) {
+                const invItem = inventoryItems.find(i => i.id === prod.inventoryItemId);
+                if (invItem) {
+                    await updateInventoryItem(prod.inventoryItemId, {
+                        currentStock: invItem.currentStock - prod.quantity
+                    });
+                }
+            }
+
+            setLastCreatedJob({
+                ...existingJobRef,
+                osNumber: finalOsNumber,
+                patientName: patientName.trim().toUpperCase(),
+                dentistId: selectedDentistId,
+                dentistName: dentistName.trim().toUpperCase(),
+                status: JobStatus.PENDING,
+                id: onlineOrderId,
+                organizationId: currentUser.organizationId || ''
+            } as Job);
+
+        } else {
+            const jobId = await addJob(newJob); 
+            
+            // Deduct stock for each added product
+            for (const prod of addedProducts) {
+                const invItem = inventoryItems.find(i => i.id === prod.inventoryItemId);
+                if (invItem) {
+                    await updateInventoryItem(prod.inventoryItemId, {
+                        currentStock: invItem.currentStock - prod.quantity
+                    });
+                }
+            }
+
+            // If this came from an online requisition, mark it accepted
+            if (requisitionId && currentUser) {
+                await updateOnlineRequisition(currentUser.organizationId || '', requisitionId, {
+                    status: 'ACCEPTED',
+                    acceptedAsJobId: jobId
+                });
+            }
+
+            setLastCreatedJob({ ...newJob, id: jobId || 'temp-id', organizationId: currentUser.organizationId || '' } as Job);
+        }
+    } catch (err) { 
+        alert("Erro ao salvar o caso no sistema. Verifique sua conexão com a internet."); 
+    } finally {
+        setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-4 md:space-y-6 pb-20 animate-in fade-in duration-500">
+        {showOsConflictPopup && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl animate-in zoom-in duration-300">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <AlertTriangle size={32} className="text-red-600" />
+              </div>
+              <h2 className="text-2xl font-black text-slate-800 text-center mb-2">Número de OS em uso</h2>
+              <p className="text-sm font-bold text-slate-500 text-center mb-6">
+                Já existe um trabalho cadastrado com a ficha <b className="text-slate-800">{osNumber}</b>. Deseja prosseguir com o próximo número disponível ({suggestedOsNumber})?
+              </p>
+              <div className="flex gap-3">
+                <button 
+                    type="button" 
+                    onClick={() => {
+                        setShowOsConflictPopup(false);
+                    }} 
+                    className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors uppercase tracking-widest text-xs"
+                >
+                    Cancelar
+                </button>
+                <button 
+                    type="button" 
+                    onClick={() => {
+                        setOsNumber(suggestedOsNumber);
+                        setShowOsConflictPopup(false);
+                    }} 
+                    className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors uppercase tracking-widest text-xs"
+                >
+                    Usar {suggestedOsNumber}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {lastCreatedJob && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full text-center animate-in zoom-in duration-300 shadow-2xl">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4"><CheckCircle size={40} className="text-green-600" /></div>
+                <h2 className="text-2xl font-bold text-slate-900 mb-2">Caso Cadastrado!</h2>
+                <p className="text-sm text-slate-500 mb-8">A Ordem de Serviço foi gerada com sucesso e está pronta para produção.</p>
+                <div className="grid grid-cols-1 gap-3">
+                  <button onClick={() => { triggerPrint(lastCreatedJob, 'SHEET'); setLastCreatedJob(null); navigate('/jobs'); }} className="w-full py-4 flex items-center justify-center gap-3 bg-slate-900 text-white rounded-2xl font-bold hover:bg-slate-800 shadow-lg transition-all"><Printer size={20} /> Imprimir Ficha de Trabalho</button>
+                  <button onClick={() => { setLastCreatedJob(null); navigate('/jobs'); }} className="w-full py-4 flex items-center justify-center gap-3 border-2 border-slate-200 text-slate-700 rounded-2xl font-bold hover:bg-slate-50 transition-all"><ArrowRight size={20} /> Ir para Lista de Trabalhos</button>
+                </div>
+              </div>
+            </div>
+        )}
+
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+                <h1 className="text-xl md:text-2xl font-black text-slate-900 flex items-center gap-2 uppercase tracking-tighter"><Plus className="text-blue-600" /> Nova OS de Bancada</h1>
+                <p className="text-xs md:text-sm text-slate-500 font-bold uppercase tracking-widest opacity-60">Entrada física de trabalhos no Laboratório</p>
+            </div>
+            <div className="flex bg-slate-200 p-1 rounded-xl w-full md:w-auto">
+                <button type="button" onClick={() => setEntryType('NEW')} className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${entryType === 'NEW' ? 'bg-white text-blue-600 shadow' : 'text-slate-50'}`}>Novo Caso</button>
+                <button type="button" onClick={() => setEntryType('CONTINUATION')} className={`flex-1 md:flex-none px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${entryType === 'CONTINUATION' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Retorno / Ajuste</button>
+            </div>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-8">
+            <div className="lg:col-span-8 space-y-4 md:space-y-6">
+                
+                <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-200">
+                  <h2 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-2 uppercase tracking-widest"><UserIcon size={18} className="text-blue-500" /> Identificação Obrigatória</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    <div className="md:col-span-3">
+                        <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Nº OS <span className="text-red-500">*</span></label>
+                        <input value={osNumber} onChange={e => setOsNumber(e.target.value)} onBlur={handleOsNumberBlur} required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono font-bold text-lg focus:ring-2 focus:ring-blue-500 transition-all" />
+                    </div>
+                    <div className="md:col-span-9">
+                         <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Nome do Paciente <span className="text-red-500">*</span></label>
+                         <input value={patientName} onChange={e => setPatientName(e.target.value.toUpperCase())} required placeholder="Ex: MARIA DAS DORES" className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold uppercase" />
+                    </div>
+                    
+                    <div className="md:col-span-12 relative" ref={dropdownRef}>
+                      <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Selecionar Dentista ou Clínica <span className="text-red-500">*</span></label>
+                      <div className="relative">
+                        <div className="absolute left-3 top-3 text-slate-400">{selectedDentistId ? <Check size={18} className="text-green-500" /> : <SearchIcon size={18} />}</div>
+                        <input type="text" value={dentistSearchQuery} onChange={e => { setDentistSearchQuery(e.target.value.toUpperCase()); setShowDentistSuggestions(true); }} onFocus={() => setShowDentistSuggestions(true)} placeholder="Digite o nome do dentista..." className={`w-full pl-10 pr-4 py-2.5 bg-white border rounded-xl outline-none transition-all focus:ring-2 font-bold uppercase ${selectedDentistId ? 'border-green-200 bg-green-50/30' : 'border-slate-200 focus:ring-blue-500'}`} />
+                      </div>
+                      {showDentistSuggestions && dentistSearchQuery.length > 0 && (
+                          <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2">
+                             <div className="max-h-60 overflow-y-auto">
+                                {suggestions.map(d => (
+                                    <button key={d.id} type="button" onClick={() => selectDentist(d)} className="w-full text-left p-4 hover:bg-blue-50 flex items-center justify-between border-b border-slate-50 last:border-0 group">
+                                        <div className="flex items-center gap-3"><div className={`p-2 rounded-lg ${d.type === 'ONLINE' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}><Stethoscope size={16} /></div><div><p className="font-black text-slate-800 text-sm">{d.name}</p>{d.clinicName && <p className="text-[9px] text-slate-400 uppercase font-black">{d.clinicName}</p>}</div></div>
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${d.type === 'ONLINE' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}>{d.type === 'ONLINE' ? 'WEB' : 'INTERNO'}</span>
+                                    </button>
+                                ))}
+                                <button type="button" onClick={handleManualDentistEntry} className="w-full text-left p-4 bg-slate-50 hover:bg-blue-600 hover:text-white transition-all group flex items-center gap-3 border-t"><div className="p-2 rounded-lg bg-white shadow-sm"><Plus size={16} className="text-blue-600" /></div><p className="text-xs font-black uppercase tracking-wider">Usar Nome Avulso: "{dentistSearchQuery}"</p></button>
+                             </div>
+                          </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-200">
+                    <h2 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-2 uppercase tracking-widest"><Layers size={18} className="text-blue-500" /> Configurar Itens da OS <span className="text-red-500">*</span></h2>
+                    <div className="bg-slate-50 p-4 md:p-6 rounded-2xl border border-slate-200 space-y-6">
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Natureza do Item</label>
+                                    <div className="flex gap-2">
+                                        <button type="button" onClick={() => { setItemNature('NORMAL'); setCommissionDisabled(false); }} className={`flex-1 py-2.5 rounded-xl border-2 font-black text-[10px] uppercase transition-all ${itemNature === 'NORMAL' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-400'}`}>Normal</button>
+                                        <button type="button" onClick={() => { setItemNature('REPETITION'); setCommissionDisabled(true); }} className={`flex-1 py-2.5 rounded-xl border-2 font-black text-[10px] uppercase transition-all ${itemNature === 'REPETITION' ? 'border-red-600 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-400'}`}>Repetição</button>
+                                        <button type="button" onClick={() => { setItemNature('ADJUSTMENT'); setCommissionDisabled(true); }} className={`flex-1 py-2.5 rounded-xl border-2 font-black text-[10px] uppercase transition-all ${itemNature === 'ADJUSTMENT' ? 'border-orange-600 bg-orange-50 text-orange-700' : 'border-slate-200 bg-white text-slate-400'}`}>Ajuste</button>
+                                    </div>
+                                </div>
+                                <div className="relative" ref={jobTypeDropdownRef}>
+                                    <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Tipo de Prótese</label>
+                                    <div className="relative">
+                                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                                            <SearchIcon size={16} />
+                                        </div>
+                                        <input 
+                                            type="text" 
+                                            value={isSearchingJobType ? jobTypeSearchQuery : (activeJobType?.name || '')} 
+                                            onChange={e => {
+                                                setJobTypeSearchQuery(e.target.value);
+                                                setShowJobTypeSuggestions(true);
+                                                if (!e.target.value) setSelectedTypeId('');
+                                            }}
+                                            onFocus={() => {
+                                                setJobTypeSearchQuery(activeJobType?.name || '');
+                                                setShowJobTypeSuggestions(true);
+                                                setIsSearchingJobType(true);
+                                            }}
+                                            placeholder="Buscar tipo de prótese..."
+                                            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm"
+                                        />
+                                        {selectedTypeId && (
+                                            <button 
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedTypeId('');
+                                                    setJobTypeSearchQuery('');
+                                                    setIsSearchingJobType(false);
+                                                }}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                            >
+                                                <X size={14} />
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {showJobTypeSuggestions && (
+                                        <div className="absolute z-[110] left-0 right-0 mt-2 bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2">
+                                            <div className="max-h-[240px] overflow-y-auto">
+                                                {filteredJobTypes.length > 0 ? (
+                                                    filteredJobTypes.map(type => (
+                                                        <button 
+                                                            key={type.id} 
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setSelectedTypeId(type.id);
+                                                                setJobTypeSearchQuery(type.name);
+                                                                setShowJobTypeSuggestions(false);
+                                                                setIsSearchingJobType(false);
+                                                            }} 
+                                                            className={`w-full text-left px-4 py-3 hover:bg-blue-50 flex items-center justify-between group transition-colors ${selectedTypeId === type.id ? 'bg-blue-50' : ''}`}
+                                                        >
+                                                            <div className="flex items-center gap-3">
+                                                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${selectedTypeId === type.id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                                                    <Layers size={16} />
+                                                                </div>
+                                                                <div>
+                                                                    <div className={`text-xs font-bold ${selectedTypeId === type.id ? 'text-blue-700' : 'text-slate-700'}`}>{type.name}</div>
+                                                                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">R$ {type.basePrice.toFixed(2)}</div>
+                                                                </div>
+                                                            </div>
+                                                            {selectedTypeId === type.id && <Check size={14} className="text-blue-600" />}
+                                                        </button>
+                                                    ))
+                                                ) : (
+                                                    <div className="p-4 text-center text-slate-400 text-xs font-bold">Nenhum tipo encontrado</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                                <div className={`w-full ${itemSelectedTeeth.length > 0 ? 'opacity-50 pointer-events-none' : ''}`}>
+                                    <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Qtd</label>
+                                    <input type="number" min="1" value={quantity} readOnly={itemSelectedTeeth.length > 0} onChange={e => setQuantity(parseInt(e.target.value) || 1)} className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl outline-none text-center font-black" />
+                                </div>
+                                <div className="w-full">
+                                    <label className="block text-[10px] font-black text-slate-400 mb-1 uppercase tracking-widest">Cor</label>
+                                    <input type="text" value={itemColor} onChange={e => setItemColor(e.target.value)} placeholder="Ex: A3" className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl outline-none font-bold text-slate-800 text-xs" />
+                                </div>
+                            </div>
+                        </div>
+
+                        {activeJobType && activeJobType.variationGroups?.length > 0 && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-200">
+                                {activeJobType.variationGroups.map(group => (
+                                    <div key={group.id} className="space-y-2">
+                                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{group.name}</h4>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {group.options.map(option => {
+                                                const isDis = disabledOptions.has(option.id);
+                                                const isSelected = group.selectionType === 'SINGLE' ? selectedVariations[group.id] === option.id : (selectedVariations[group.id] as string[] || []).includes(option.id);
+                                                return (
+                                                    <button key={option.id} type="button" disabled={isDis} onClick={() => handleVariationChange(group, option.id)} className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${isDis ? 'opacity-20 cursor-not-allowed bg-slate-100' : isSelected ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-105' : 'bg-white text-slate-600 border-slate-200 hover:border-blue-400'}`}>
+                                                        {option.name}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {activeJobType && (
+                            <div className="pt-4 border-t border-slate-200 space-y-2">
+                                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Dentes Relacionados (Opcional)</h4>
+                                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex justify-center items-center overflow-hidden">
+                                    <Odontogram 
+    selectedTeeth={itemSelectedTeeth} 
+    onChange={(teeth) => {
+        setItemSelectedTeeth(teeth);
+        if (teeth.length > 0) {
+            setQuantity(teeth.length);
+        } else {
+            setQuantity(1);
+        }
+    }}
+    toothColors={odontogramProps.colors}
+    disabledTeeth={odontogramProps.disabled}
+    selectionColor={activeJobType ? getJobTypeColor(activeJobType.id, activeJobType.name) : undefined}
+    className="w-full max-w-[260px] sm:max-w-[320px] md:max-w-[400px] h-auto"
+  />
+                                </div>
+                                {itemSelectedTeeth.length > 0 && (
+                                    <p className="text-xs text-indigo-600 font-bold">Dentes selecionados: {itemSelectedTeeth.sort().join(', ')}</p>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="pt-4 border-t border-slate-200 space-y-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">Preço Final Unitário (R$)</label>
+                                    <input type="number" step="0.01" value={manualPrice !== null ? manualPrice : calculatedBasePrice.toFixed(2)} onChange={e => setManualPrice(parseFloat(e.target.value))} className="w-full px-4 py-2.5 border rounded-xl font-black focus:ring-2 outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">Desconto Extra (%)</label>
+                                    <input type="number" max="100" min="0" value={discountPercent} onChange={e => setDiscountPercent(Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)))} className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black focus:ring-2 outline-none" />
+                                </div>
+                            </div>
+                            
+                            {(itemNature === 'REPETITION' || itemNature === 'ADJUSTMENT') && (
+                                <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-slate-200">
+                                    <div className="relative flex items-start">
+                                        <div className="flex h-6 items-center">
+                                            <input
+                                                id="commission-active"
+                                                name="commission-active"
+                                                type="checkbox"
+                                                checked={!commissionDisabled}
+                                                onChange={(e) => setCommissionDisabled(!e.target.checked)}
+                                                className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-600/20"
+                                            />
+                                        </div>
+                                        <div className="ml-3 text-sm leading-6">
+                                            <label htmlFor="commission-active" className="font-black text-slate-800 uppercase tracking-tight text-[11px]">
+                                                Ativar Comissão para este item
+                                            </label>
+                                            <p className="text-[10px] text-slate-500 font-bold">Por padrão, ajustes e repetições não geram comissão no app.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <button type="button" onClick={handleAddItem} disabled={!selectedTypeId} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-xl shadow-blue-100 disabled:opacity-50">
+                            <Plus size={20} /> ADICIONAR AO CASO
+                        </button>
+                    </div>
+
+                    {addedItems.length > 0 && (
+                      <div className="mt-4 space-y-2">
+                        {addedItems.map(item => (
+                            <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-2xl border border-slate-200 animate-in slide-in-from-right-4">
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-8 h-8 ${item.nature === 'REPETITION' ? 'bg-red-600' : item.nature === 'ADJUSTMENT' ? 'bg-orange-600' : 'bg-blue-600'} text-white rounded-lg flex items-center justify-center font-black text-xs`}>{item.quantity}</div>
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+      <div 
+        className="w-2.5 h-2.5 rounded-full" 
+        style={{ backgroundColor: getJobTypeColor(item.jobTypeId, item.name) }} 
+        title="Cor no Odontograma"
+      />
+      <p className="font-black text-slate-800 text-sm uppercase truncate max-w-[200px] leading-tight">{item.name}</p>
+   </div>
+                                        
+                                        {/* Variations and Teeth */}
+                                        <div className="flex flex-col gap-0.5 mt-1">
+                                            {item.selectedVariationIds && item.selectedVariationIds.length > 0 && (
+                                                <p className="text-[10px] text-slate-500 font-bold">
+                                                    Opções: {
+                                                        item.selectedVariationIds.map(id => {
+                                                            const group = activeJobType?.variationGroups.find(g => g.options.some(o => o.id === id));
+                                                            const opt = group?.options.find(o => o.id === id);
+                                                            return opt?.name;
+                                                        }).filter(Boolean).join(', ') || 'Várias opções'
+                                                    }
+                                                </p>
+                                            )}
+                                            {item.selectedTeeth && item.selectedTeeth.length > 0 && (
+                                                <p className="text-[10px] text-indigo-600 font-bold">
+                                                    Dentes: {formatTeethRange(item.selectedTeeth)}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                            {(item.nature === 'REPETITION' || item.nature === 'ADJUSTMENT') && (
+                                                <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${item.nature === 'REPETITION' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'} inline-block`}>
+                                                    {item.nature === 'REPETITION' ? 'Repetição' : 'Ajuste'}
+                                                </span>
+                                            )}
+                                            {(item.nature === 'REPETITION' || item.nature === 'ADJUSTMENT') && (
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => {
+                                                        const updatedItems = addedItems.map(i => i.id === item.id ? { ...i, commissionDisabled: !i.commissionDisabled } : i);
+                                                        setAddedItems(updatedItems);
+                                                    }}
+                                                    className={`text-[9px] font-black uppercase px-2 py-1 rounded-md transition-all flex items-center gap-1 hover:scale-105 active:scale-95 shadow-sm ${!item.commissionDisabled ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-100'}`}
+                                                >
+                                                    {!item.commissionDisabled ? '✅ COMISSÃO ATIVA' : '🚫 COMISSÃO INATIVA'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <span className="font-black text-slate-700 text-sm">R$ {(item.price * item.quantity).toFixed(2)}</span>
+                                    <button type="button" onClick={() => setAddedItems(addedItems.filter(i => i.id !== item.id))} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                                </div>
+                            </div>
+                        ))}
+                       </div>
+                    )}
+                </div>
+
+                <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-200">
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-widest"><Package size={18} className="text-blue-500" /> Venda de Implantes/Componentes</h2>
+                        <button type="button" onClick={() => setIsAddingProduct(!isAddingProduct)} className={`text-xs font-black px-3 py-1.5 rounded-lg transition-colors ${isAddingProduct ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
+                            {isAddingProduct ? 'Cancelar' : '+ Vender Produto'}
+                        </button>
+                    </div>
+
+                    {isAddingProduct && (
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 mb-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] font-black text-slate-500 uppercase">Produto / Implante</label>
+                                    <select value={selectedProductId} onChange={e => {
+                                        setSelectedProductId(e.target.value);
+                                        const prod = inventoryItems.find(i => i.id === e.target.value);
+                                        if (prod) setProductManualPrice(prod.sellPrice);
+                                    }} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="">Selecione um item no estoque...</option>
+                                        {inventoryItems.map(item => (
+                                            <option key={item.id} value={item.id} disabled={item.currentStock <= 0}>
+                                                {item.name} ({item.currentStock > 0 ? `${item.currentStock} un.` : 'Sem Estoque'}) {item.dentistOwnerId ? '- ESTOQUE DO CLIENTE' : ''}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="flex gap-2">
+                                    <div className="space-y-1 flex-1">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase">Qtd.</label>
+                                        <input type="number" min="1" value={productQuantity} onChange={e => setProductQuantity(Number(e.target.value))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white" />
+                                    </div>
+                                    <div className="space-y-1 flex-[1.5]">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase">Valor Un. (R$)</label>
+                                        <input type="number" step="0.01" value={productManualPrice !== null ? productManualPrice : ''} onChange={e => setProductManualPrice(Number(e.target.value))} className="w-full p-2.5 rounded-xl border border-slate-200 bg-white" />
+                                    </div>
+                                    <div className="space-y-1 flex-[1.5]">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase flex justify-between items-center">
+                                           <span>Desc (%)</span>
+                                           {productDiscountPercent > 0 && <span className="text-[8px] text-green-600 font-bold bg-green-50 px-1 rounded">-{(productDiscountPercent).toFixed(1)}%</span>}
+                                        </label>
+                                        <div className="relative">
+                                            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                                                <Percent size={14} />
+                                            </div>
+                                            <input type="number" step="0.01" min="0" max="100" value={productDiscountPercent} onChange={e => setProductDiscountPercent(Number(e.target.value))} className="w-full pl-9 pr-2 py-2.5 rounded-xl border border-slate-200 bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="button" onClick={handleAddProduct} disabled={!selectedProductId} className="w-full py-3 bg-blue-600 text-white font-black rounded-xl cursor-pointer hover:bg-blue-700 disabled:opacity-50 transition-all text-xs">
+                                ADICIONAR PRODUTO AO CASO
+                            </button>
+                        </div>
+                    )}
+
+                    {addedProducts.length > 0 && (
+                      <div className="space-y-2 mt-4 border-t border-slate-100 pt-4">
+                        {addedProducts.map(prod => (
+                            <div key={prod.id} className="flex justify-between items-center p-3 bg-amber-50/50 rounded-2xl border border-amber-100 animate-in slide-in-from-right-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 bg-amber-500 text-white rounded-lg flex items-center justify-center font-black text-xs">{prod.quantity}</div>
+                                    <div className="min-w-0">
+                                        <p className="font-black text-slate-800 text-sm uppercase truncate max-w-[200px] leading-tight">{prod.name}</p>
+                                        {prod.dentistOwnerId && (
+                                            <p className="text-[9px] text-amber-700 font-bold uppercase overflow-hidden whitespace-nowrap text-ellipsis mt-1">Estoque do Próprio Dentista</p>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <span className="font-black text-slate-700 text-sm">R$ {(prod.unitPrice * prod.quantity).toFixed(2)}</span>
+                                    <button type="button" onClick={() => handleRemoveProduct(prod.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                                </div>
+                            </div>
+                        ))}
+                      </div>
+                    )}
+                </div>
+            </div>
+            
+            <div className="lg:col-span-4 space-y-4 md:space-y-6">
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 sticky top-6 space-y-6">
+                <h2 className="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-widest"><Box size={18} className="text-blue-500" /> Logística Interna</h2>
+
+                <div>
+                    <label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Nível de Prioridade</label>
+                    <div className="grid grid-cols-2 gap-2">
+                        {[UrgencyLevel.LOW, UrgencyLevel.NORMAL, UrgencyLevel.HIGH, UrgencyLevel.VIP].map(level => (
+                            <button
+                                key={level}
+                                type="button"
+                                onClick={() => setUrgency(level)}
+                                className={`py-2 px-1 text-[10px] font-black uppercase rounded-xl border-2 transition-all flex items-center justify-center gap-1 ${
+                                    urgency === level 
+                                    ? level === UrgencyLevel.VIP ? 'bg-orange-600 border-orange-600 text-white shadow-lg' : 'bg-blue-600 border-blue-600 text-white shadow-lg'
+                                    : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200'
+                                }`}
+                            >
+                                {level === UrgencyLevel.VIP && <Crown size={12}/>}
+                                {level}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div>
+                    <label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Previsão de Saída <span className="text-red-500">*</span></label>
+                    <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-black text-sm" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Nº Caixa</label>
+                        <input value={boxNumber} onChange={e => setBoxNumber(e.target.value)} placeholder="00" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-center font-black text-2xl focus:ring-2 focus:ring-blue-500 outline-none" />
+                        {activeJobsWithSameBox.length > 0 && (
+                            <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-xl relative z-10">
+                                <div className="flex items-center gap-2 text-amber-700 font-bold mb-2 text-[10px] uppercase">
+                                    <AlertTriangle size={14} />
+                                    <span>Caixa em uso!</span>
+                                </div>
+                                <ul className="space-y-2">
+                                    {activeJobsWithSameBox.map(conflictingJob => (
+                                        <li key={conflictingJob.id}>
+                                            <Link to={`/jobs/${conflictingJob.id}`} target="_blank" rel="noopener noreferrer" className="block p-2 bg-white rounded-lg border border-amber-100 hover:border-amber-300 transition-colors shadow-sm">
+                                                <div className="text-xs font-bold text-slate-800">OS {conflictingJob.osNumber}</div>
+                                                <div className="text-[10px] text-slate-500 truncate">{conflictingJob.dentistName} - {conflictingJob.patientName}</div>
+                                            </Link>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </div>
+                    <div>
+                        <label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Cor</label>
+                        <div className="flex flex-wrap gap-1.5 justify-center">
+                            {boxColors.map(color => (
+                                <button key={color.id} type="button" onClick={() => setSelectedColorId(color.id)} className={`w-7 h-7 rounded-full border-2 transition-all ${selectedColorId === color.id ? 'border-slate-900 scale-125 shadow-md' : 'border-transparent opacity-60'}`} style={{ backgroundColor: color.hex }} />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <label className="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Observações Técnicas / Histórico acumulado</label>
+                    <textarea 
+                        value={notes} 
+                        onChange={e => setNotes(e.target.value)} 
+                        rows={5} 
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-xs font-bold" 
+                        placeholder="Insira as observações aqui. O histórico anterior será reservado e continuará acumulando." 
+                    />
+                    
+                    {lastJobFound && (
+                        <div className="mt-2 text-xs border border-blue-100 bg-blue-50/70 p-3 rounded-2xl flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-1 duration-300">
+                            <div className="flex items-center gap-1.5 font-bold text-blue-800">
+                                <AlertCircle size={14} className="text-blue-600 flex-shrink-0" />
+                                <span>Vínculo com Caso Anterior Detectado!</span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 leading-normal">
+                                Importamos observações da <span className="font-extrabold text-blue-900">OS #{lastJobFound.osNumber}</span> (Paciente: <span className="font-semibold uppercase text-slate-800">{lastJobFound.patientName}</span>). 
+                                O campo observações agora é acumulativo com os detalhes do histórico.
+                            </p>
+                            {lastJobFound.notes ? (
+                                <div className="mt-1 bg-white border border-blue-100 text-slate-600 p-2.5 rounded-xl text-[11px] leading-relaxed font-mono max-h-32 overflow-y-auto whitespace-pre-line shadow-sm">
+                                    <div className="text-[9px] font-bold text-blue-600 mb-1 uppercase tracking-wider border-b border-blue-50 pb-1">Observações da OS #{lastJobFound.osNumber}:</div>
+                                    {lastJobFound.notes}
+                                </div>
+                            ) : (
+                                <p className="text-[10px] text-slate-400 italic bg-white border border-blue-100 p-2 rounded-xl text-center">Nenhuma observação técnica registrada no caso anterior.</p>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="pt-6 border-t border-slate-100">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Total do Caso</span>
+                        <span className="text-2xl font-black text-slate-900">R$ {addedItems.reduce((acc, i) => acc + (i.price * i.quantity), 0).toFixed(2)}</span>
+                    </div>
+                    <button type="submit" disabled={isSubmitting} className="w-full py-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white font-black rounded-2xl hover:shadow-2xl active:scale-95 transition-all flex items-center justify-center gap-3 shadow-xl shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed">
+                        {isSubmitting ? <RefreshCw size={24} className="animate-spin" /> : <FileCheck size={24} />} 
+                        {isSubmitting ? 'SALVANDO...' : 'SALVAR NO SISTEMA'}
+                    </button>
+                </div>
+              </div>
+            </div>
+        </form>
+    </div>
+  );
+};

@@ -1,0 +1,2659 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { useApp } from '../../context/AppContext';
+import { JobStatus, UserRole, Expense, Job, TransactionCategory, BillingBatch, DentistPayment } from '../../types';
+import * as api from '../../services/firebaseService';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart, Pie, Cell, AreaChart, Area, Legend
+} from 'recharts';
+import { 
+  DollarSign, TrendingUp, TrendingDown, Search, Calendar, Plus, Printer, 
+  FileText, Download, AlertCircle, Wallet, Briefcase, CheckCircle, 
+  CreditCard, Loader2, User, Package, Clock, X, Filter, 
+  FileCheck, Receipt, Check, Trash2, ShoppingCart, ArrowUpRight, ArrowDownRight,
+  ChevronDown, ChevronLeft, History, ExternalLink, Copy, Tag, AlertTriangle, ShieldCheck, Zap, ArrowUpCircle,
+  ArrowDownCircle, FileSpreadsheet, Building, UserCheck, Save, Banknote, ChevronRight
+} from 'lucide-react';
+
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+export const Finance = () => {
+  const { 
+    jobs, allUsers, manualDentists, currentOrg, dentistPayments, billingBatches, 
+    addDentistPayment, updateDentistPayment, uploadFile, updateBillingBatchStatus, generateBatchBoleto,
+    cardMachines, bankAccounts, addCardMachine, updateCardMachine, deleteCardMachine,
+    addBankAccount, updateBankAccount, deleteBankAccount,
+    currentPlan, currentUser
+  } = useApp();
+  const [activeTab, setActiveTab] = useState<'DASHBOARD' | 'RECEIVABLES' | 'EXPENSES' | 'BATCHES' | 'SETTINGS' | 'REPORTS'>('DASHBOARD');
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  const isFreeLab = currentOrg?.orgType === 'LAB' && (currentPlan?.id === 'free_lab' || currentPlan?.features?.isLabFreeStoreOnly === true);
+
+  // States
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  // const [billingBatches, setBillingBatches] = useState<BillingBatch[]>([]); // Using from context now for sync
+
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [syncingStore, setSyncingStore] = useState(false);
+
+  const handleSyncStoreSales = async () => {
+    if (!currentOrg?.id) return;
+    setSyncingStore(true);
+    try {
+      const res = await api.apiSyncStoreOrders({ organizationId: currentOrg.id });
+      alert(`Sincronização concluída com sucesso! Pedidos da loja verificados: ${res.jobsChecked || 0}. Status de pagamentos atualizados: ${res.paymentsUpdated || 0}. Vouchers de combos gerados: ${res.vouchersGenerated || 0}. Seu financeiro foi atualizado e consolidado.`);
+    } catch (err: any) {
+      console.error("Erro ao sincronizar vendas online:", err);
+      alert("Erro ao sincronizar vendas online: " + (err.message || err));
+    } finally {
+      setSyncingStore(false);
+    }
+  };
+
+  // Advanced Financial View State
+  const [showStatement, setShowStatement] = useState(false);
+  const [statementClient, setStatementClient] = useState<any | null>(null);
+  const [dentistJobs, setDentistJobs] = useState<Job[]>([]);
+  const [isLoadingStatement, setIsLoadingStatement] = useState(false);
+  const [activeSubTab, setActiveSubTab] = useState<'EXTRATO' | 'RECEBIMENTOS' | 'FATURAS'>('EXTRATO');
+  const [showAsaasError, setShowAsaasError] = useState(false);
+  const [filterStartDate, setFilterStartDate] = useState(() => {
+      const d = new Date();
+      return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0];
+  });
+  const [filterEndDate, setFilterEndDate] = useState(() => {
+      const d = new Date();
+      return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0];
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Reports Tab States
+  const [reportStartDate, setReportStartDate] = useState(() => {
+      const d = new Date();
+      return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0];
+  });
+  const [reportEndDate, setReportEndDate] = useState(() => {
+      const d = new Date();
+      return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0];
+  });
+  const [reportType, setReportType] = useState<'ALL' | 'DESPESA' | 'RECEBIMENTO'>('ALL');
+  const [reportSource, setReportSource] = useState<'ALL' | 'MANUAL_OR_ASAAS' | 'ONLINE_STORE' | 'EXPENSE'>('ALL');
+  const [reportStatus, setReportStatus] = useState<'ALL' | 'PAID' | 'PENDING'>('ALL');
+  const [reportSearchTerm, setReportSearchTerm] = useState('');
+
+  const reportMovements = useMemo(() => {
+    // 1. Expenses
+    const movementsFromExpenses = expenses.map(e => ({
+      id: e.id,
+      date: new Date(e.date + 'T12:00:00'),
+      description: e.description,
+      type: 'DESPESA' as const,
+      category: `Despesa (${e.category})`,
+      amount: e.amount,
+      paymentMethod: '---',
+      status: e.status === 'PAID' ? 'PAID' : 'PENDING',
+      source: 'EXPENSE' as const,
+      refId: e.id,
+      dentistName: '---'
+    }));
+
+    // 2. Manual and Asaas Dentist Payments
+    const movementsFromPayments = dentistPayments.map(p => ({
+      id: p.id,
+      date: new Date(p.paymentDate),
+      description: p.notes || `Recebimento - ${p.dentistName}`,
+      type: p.type === 'DISCOUNT' ? 'DESPESA' as const : 'RECEBIMENTO' as const,
+      category: p.type === 'DISCOUNT' ? 'Desconto Concedido' : (p.batchId ? 'Recebimento Asaas' : 'Recebimento Manual'),
+      amount: p.amount,
+      paymentMethod: p.paymentMethod,
+      status: 'PAID', // Payments recorded here are already paid
+      source: 'MANUAL_OR_ASAAS' as const,
+      refId: p.id,
+      dentistName: p.dentistName
+    }));
+
+    // 3. Online Store Jobs
+    const movementsFromOnlineStore = jobs
+      .filter(j => j.origin === 'ONLINE_ORDER' || j.origin === 'ONLINE_REQUISITION')
+      .map(j => ({
+        id: j.id,
+        date: new Date(j.createdAt),
+        description: `Pedido Loja Online OS #${j.osNumber || j.id.substring(0, 6)} - Paciente: ${j.patientName || '---'}`,
+        type: 'RECEBIMENTO' as const,
+        category: 'Loja Online',
+        amount: j.totalValue,
+        paymentMethod: 'Cartão/Pix (Asaas)',
+        status: (j.paymentStatus === 'PAID' || j.paymentStatus === 'VOUCHER') ? 'PAID' : 'PENDING',
+        source: 'ONLINE_STORE' as const,
+        refId: j.id,
+        dentistName: j.dentistName || '---'
+      }));
+
+    // Combine all
+    let allMovements = [
+      ...movementsFromExpenses,
+      ...movementsFromPayments,
+      ...movementsFromOnlineStore
+    ];
+
+    // Filter by start date and end date
+    const sDate = reportStartDate ? new Date(`${reportStartDate}T00:00:00`) : new Date(0);
+    const eDate = reportEndDate ? new Date(`${reportEndDate}T23:59:59`) : new Date(8640000000000000);
+
+    allMovements = allMovements.filter(m => m.date >= sDate && m.date <= eDate);
+
+    // Filter by type
+    if (reportType !== 'ALL') {
+      allMovements = allMovements.filter(m => m.type === reportType);
+    }
+
+    // Filter by source
+    if (reportSource !== 'ALL') {
+      allMovements = allMovements.filter(m => m.source === reportSource);
+    }
+
+    // Filter by status
+    if (reportStatus !== 'ALL') {
+      allMovements = allMovements.filter(m => m.status === reportStatus);
+    }
+
+    // Filter by search term
+    if (reportSearchTerm.trim()) {
+      const s = reportSearchTerm.toLowerCase();
+      allMovements = allMovements.filter(m => 
+        m.description.toLowerCase().includes(s) || 
+        m.dentistName.toLowerCase().includes(s) ||
+        m.category.toLowerCase().includes(s)
+      );
+    }
+
+    // Sort by date descending
+    return allMovements.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [expenses, dentistPayments, jobs, reportStartDate, reportEndDate, reportType, reportSource, reportStatus, reportSearchTerm]);
+
+  const reportStats = useMemo(() => {
+    let totalInflows = 0;
+    let totalOutflows = 0;
+    let pendingInflows = 0;
+    let pendingOutflows = 0;
+
+    reportMovements.forEach(m => {
+      if (m.type === 'RECEBIMENTO') {
+        if (m.status === 'PAID') {
+          totalInflows += m.amount;
+        } else {
+          pendingInflows += m.amount;
+        }
+      } else if (m.type === 'DESPESA') {
+        if (m.status === 'PAID') {
+          totalOutflows += m.amount;
+        } else {
+          pendingOutflows += m.amount;
+        }
+      }
+    });
+
+    return {
+      totalInflows,
+      totalOutflows,
+      pendingInflows,
+      pendingOutflows,
+      netBalance: totalInflows - totalOutflows
+    };
+  }, [reportMovements]);
+
+  const exportReportCSV = () => {
+    if (!currentOrg) return;
+    const headers = ['Data', 'Descricao', 'Tipo', 'Origem/Categoria', 'Cliente (Dentista)', 'Metodo Pagamento', 'Valor (R$)', 'Status'];
+    const rows = reportMovements.map(m => [
+      m.date.toLocaleDateString('pt-BR'),
+      m.description.replace(/;/g, ','),
+      m.type,
+      m.category,
+      m.dentistName,
+      m.paymentMethod || '---',
+      m.amount.toFixed(2),
+      m.status === 'PAID' ? 'Pago' : 'Pendente'
+    ]);
+
+    const csvContent = [
+      headers.join(';'),
+      ...rows.map(row => row.join(';'))
+    ].join('\n');
+
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Relatorio_Financeiro_${currentOrg.name.replace(/\s+/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportReportPDF = () => {
+    if (!currentOrg) return;
+    const doc = new jsPDF();
+    
+    // Header
+    doc.setFillColor(15, 23, 42); // slate-900 color
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(255, 255, 255);
+    doc.text(currentOrg.name, 14, 18);
+    
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(200, 220, 255);
+    doc.text("Relatório de Movimentações Financeiras", 14, 28);
+    
+    const sDate = reportStartDate ? new Date(`${reportStartDate}T00:00:00`).toLocaleDateString('pt-BR') : 'Início';
+    const eDate = reportEndDate ? new Date(`${reportEndDate}T23:59:59`).toLocaleDateString('pt-BR') : 'Fim';
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.text(`Período: ${sDate} - ${eDate}`, 195, 28, { align: 'right' });
+    
+    // Summary metrics section
+    doc.setTextColor(50, 50, 50);
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Resumo Financeiro do Período", 14, 52);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Total Recebimentos (Realizados): R$ ${reportStats.totalInflows.toFixed(2)}`, 14, 60);
+    doc.text(`Total Despesas (Realizadas): R$ ${reportStats.totalOutflows.toFixed(2)}`, 14, 66);
+    doc.text(`Saldo Líquido: R$ ${reportStats.netBalance.toFixed(2)}`, 14, 72);
+    
+    doc.text(`Recebimentos Pendentes: R$ ${reportStats.pendingInflows.toFixed(2)}`, 110, 60);
+    doc.text(`Despesas Pendentes: R$ ${reportStats.pendingOutflows.toFixed(2)}`, 110, 66);
+    doc.text(`Qtd. de Movimentações: ${reportMovements.length}`, 110, 72);
+    
+    // Table of movements
+    const tableData = reportMovements.map(m => [
+      m.date.toLocaleDateString('pt-BR'),
+      m.description,
+      m.type === 'RECEBIMENTO' ? 'Recebimento' : 'Despesa',
+      m.category,
+      m.dentistName || '---',
+      `R$ ${m.amount.toFixed(2)}`,
+      m.status === 'PAID' ? 'Pago' : 'Pendente'
+    ]);
+    
+    autoTable(doc, {
+      startY: 80,
+      head: [['Data', 'Descrição', 'Tipo', 'Categoria/Origem', 'Cliente', 'Valor', 'Status']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillColor: [15, 23, 42] },
+      styles: { fontSize: 8 },
+      columnStyles: {
+        5: { fontStyle: 'bold' }
+      }
+    });
+    
+    doc.save(`Relatorio_Financeiro_${currentOrg.name.replace(/\s+/g, '_')}.pdf`);
+  };
+
+  const generateFreeLabReportPDF = () => {
+    if (!currentOrg) return;
+    const doc = new jsPDF();
+    const sDate = filterStartDate ? new Date(`${filterStartDate}T00:00:00`) : new Date(0);
+    const eDate = filterEndDate ? new Date(`${filterEndDate}T23:59:59`) : new Date();
+
+    const periodStr = `${sDate.toLocaleDateString('pt-BR')} - ${eDate.toLocaleDateString('pt-BR')}`;
+    
+    // Header
+    doc.setFillColor(15, 23, 42); // slate-900 color
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(255, 255, 255);
+    doc.text(currentOrg.name, 14, 18);
+    
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(200, 220, 255);
+    doc.text("Relatório de Vendas - Loja Online", 14, 28);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.text(`Período: ${periodStr}`, 195, 28, { align: 'right' });
+    
+    // Body / Metrics
+    const periodJobs = jobs.filter(j => {
+      if (j.origin !== 'ONLINE_ORDER' && j.origin !== 'ONLINE_REQUISITION') return false;
+      const d = new Date(j.createdAt);
+      return d >= sDate && d <= eDate;
+    });
+    
+    const paidSum = periodJobs.filter(j => j.paymentStatus === 'PAID' || j.paymentStatus === 'VOUCHER').reduce((acc, c) => acc + c.totalValue, 0);
+    const pendingSum = periodJobs.filter(j => j.paymentStatus !== 'PAID' && j.paymentStatus !== 'VOUCHER').reduce((acc, c) => acc + c.totalValue, 0);
+    
+    doc.setTextColor(50, 50, 50);
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Resumo Financeiro", 14, 52);
+    
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Total Vendas Pagas: R$ ${paidSum.toFixed(2)}`, 14, 60);
+    doc.text(`Total Vendas Pendentes: R$ ${pendingSum.toFixed(2)}`, 14, 66);
+    doc.text(`Quantidade de Pedidos: ${periodJobs.length}`, 14, 72);
+    
+    // Table of sales
+    const tableData = periodJobs.map(j => [
+      j.osNumber || j.id.substring(0, 6),
+      j.dentistName || '---',
+      j.patientName || '---',
+      new Date(j.createdAt).toLocaleDateString('pt-BR'),
+      `R$ ${(j.totalValue || 0).toFixed(2)}`,
+      (j.paymentStatus === 'PAID' || j.paymentStatus === 'VOUCHER') ? 'Pago' : 'Pendente'
+    ]);
+    
+    autoTable(doc, {
+      startY: 80,
+      head: [['Cód / OS', 'Dentista', 'Paciente', 'Data', 'Valor', 'Pagamento']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillColor: [15, 23, 42] },
+      styles: { fontSize: 9 }
+    });
+    
+    doc.save(`Relatorio_Vendas_Loja_${currentOrg.name.replace(/\s+/g, '_')}.pdf`);
+  };
+
+  // Manual Payment Form
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState<number>(0);
+  const [paymentInterest, setPaymentInterest] = useState<number>(0);
+  const [paymentFees, setPaymentFees] = useState<number>(0);
+  const [paymentDiscount, setPaymentDiscount] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<DentistPayment['paymentMethod']>('PIX');
+  const [paymentCardMachineId, setPaymentCardMachineId] = useState<string>('');
+  const [paymentBankAccountId, setPaymentBankAccountId] = useState<string>('');
+  const [paymentType, setPaymentType] = useState<DentistPayment['type']>('PAYMENT');
+  const [paymentNotes, setPaymentNotes] = useState('');
+  const [showBoletoModal, setShowBoletoModal] = useState(false);
+  const [customBoletoAmount, setCustomBoletoAmount] = useState<number>(0);
+  const [customBoletoDueDate, setCustomBoletoDueDate] = useState<string>(() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 5);
+      return d.toISOString().split('T')[0];
+  });
+
+  // Attachment upload states
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [paymentAttachmentUrl, setPaymentAttachmentUrl] = useState('');
+  const [paymentAttachmentName, setPaymentAttachmentName] = useState('');
+
+  // Selected payment detail state
+  const [selectedPaymentForDetail, setSelectedPaymentForDetail] = useState<DentistPayment | null>(null);
+  const [isEditingDetailPayment, setIsEditingDetailPayment] = useState(false);
+
+  // States when editing detailed payment
+  const [editDetailAmount, setEditDetailAmount] = useState<number>(0);
+  const [editDetailInterest, setEditDetailInterest] = useState<number>(0);
+  const [editDetailFees, setEditDetailFees] = useState<number>(0);
+  const [editDetailDiscount, setEditDetailDiscount] = useState<number>(0);
+  const [editDetailMethod, setEditDetailMethod] = useState<DentistPayment['paymentMethod']>('PIX');
+  const [editDetailCardMachineId, setEditDetailCardMachineId] = useState<string>('');
+  const [editDetailBankAccountId, setEditDetailBankAccountId] = useState<string>('');
+  const [editDetailDate, setEditDetailDate] = useState<string>('');
+  const [editDetailNotes, setEditDetailNotes] = useState('');
+  const [editDetailAttachmentUrl, setEditDetailAttachmentUrl] = useState('');
+  const [editDetailAttachmentName, setEditDetailAttachmentName] = useState('');
+  const [uploadingEditAttachment, setUploadingEditAttachment] = useState(false);
+
+  // Expense Form State
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({
+      description: '',
+      amount: 0,
+      category: 'SUPPLIES' as TransactionCategory,
+      date: new Date().toISOString().split('T')[0],
+      status: 'PAID' as 'PAID' | 'PENDING'
+  });
+
+  useEffect(() => {
+    if (showStatement && statementClient && currentOrg) {
+        setIsLoadingStatement(true);
+        let isMounted = true;
+        api.getDentistJobs(currentOrg.id, statementClient.id).then(data => {
+            if (isMounted) {
+                setDentistJobs(data);
+                setIsLoadingStatement(false);
+            }
+        }).catch(err => {
+            console.error("Error fetching statement jobs", err);
+            if (isMounted) setIsLoadingStatement(false);
+        });
+        return () => { isMounted = false; };
+    } else {
+        setDentistJobs([]);
+        setIsLoadingStatement(false);
+    }
+  }, [showStatement, statementClient, currentOrg]);
+
+  useEffect(() => {
+    if (currentOrg) {
+      const unsubExp = api.subscribeExpenses(currentOrg.id, setExpenses);
+      return () => { unsubExp(); };
+    }
+  }, [currentOrg]);
+
+  // Chrono History Logic (Synchronized with Dentists.tsx)
+  const chronoHistory = useMemo(() => {
+    if (!statementClient) return { history: [], previousBalance: 0 };
+    
+    const clientJobs = dentistJobs.filter(j => j.dentistId === statementClient.id && (j.status === JobStatus.COMPLETED || j.status === JobStatus.DELIVERED));
+    const clientPayments = dentistPayments.filter(p => p.dentistId === statementClient.id);
+    
+    const history = [
+        ...clientJobs.map(j => ({
+            id: j.id,
+            date: j.createdAt,
+            type: 'DEBIT' as const,
+            description: `OS #${j.osNumber || j.id.substring(0,6)} - Paciente: ${j.patientName}`,
+            amount: j.totalValue || 0,
+            job: j
+        })),
+        ...clientPayments.map(p => ({
+            id: p.id,
+            date: p.paymentDate,
+            type: (p.type === 'DISCOUNT' ? 'CREDIT' : 'PAYMENT') as 'CREDIT' | 'PAYMENT',
+            description: p.type === 'DISCOUNT' ? `Desconto: ${p.notes || ''}` : `Pagamento: ${p.paymentMethod} ${p.notes ? `- ${p.notes}` : ''}`,
+            amount: p.type === 'DISCOUNT' ? Number(p.amount || 0) : (Number(p.amount || 0) + Number(p.discount || 0)),
+            payment: p
+        }))
+    ];
+    
+    const sorted = history.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    
+    const sDate = filterStartDate ? new Date(`${filterStartDate}T00:00:00`) : new Date(0);
+    const eDate = filterEndDate ? new Date(`${filterEndDate}T23:59:59`) : new Date(8640000000000000);
+
+    let runningBalance = 0;
+    let previousBalance = 0;
+    
+    const historyWithBalance = sorted.map(item => {
+        if (item.type === 'DEBIT') runningBalance -= item.amount;
+        else runningBalance += item.amount;
+        
+        const isBefore = new Date(item.date) < sDate;
+        if (isBefore) previousBalance = runningBalance;
+        
+        return { ...item, balanceAfter: runningBalance };
+    });
+
+    const filteredHistory = historyWithBalance.filter(item => {
+        const d = new Date(item.date);
+        return d >= sDate && d <= eDate;
+    });
+
+    return { history: filteredHistory, previousBalance };
+  }, [statementClient, dentistJobs, dentistPayments, filterStartDate, filterEndDate]);
+
+  const generateStatementPDF = async () => {
+    if (!statementClient || !currentOrg) return;
+
+    const doc = new jsPDF();
+    const sDate = filterStartDate ? new Date(`${filterStartDate}T00:00:00`) : new Date();
+    const eDate = filterEndDate ? new Date(`${filterEndDate}T23:59:59`) : new Date();
+
+    const periodStr = `${sDate.toLocaleDateString('pt-BR')} - ${eDate.toLocaleDateString('pt-BR')}`;
+    const startDateStr = sDate.toLocaleDateString('pt-BR');
+    const endDateStr = eDate.toLocaleDateString('pt-BR');
+
+    // Header Background / Setup (Optional light background for header box)
+    doc.setFillColor(255, 255, 255);
+    doc.rect(0, 0, 210, 35, 'F'); 
+
+    // Logo
+    if (currentOrg?.logoUrl) {
+        try {
+            const img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.src = currentOrg.logoUrl;
+            await new Promise((resolve) => {
+                img.onload = resolve;
+                img.onerror = resolve; 
+            });
+            
+            if (img.width > 0) {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.drawImage(img, 0, 0);
+                    const dataURL = canvas.toDataURL('image/png');
+                    const imgRatio = img.height / img.width;
+                    let finalWidth = 40;
+                    let finalHeight = 40 * imgRatio;
+                    if (finalHeight > 25) {
+                        finalHeight = 25;
+                        finalWidth = 25 / imgRatio;
+                    }
+                    doc.addImage(dataURL, 'PNG', 14, 5, finalWidth, finalHeight);
+                }
+            }
+        } catch (e) {
+            console.error("Erro renderizando logo", e);
+        }
+    }
+
+    // Extrato Title
+    doc.setFontSize(22);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(0, 0, 0);
+    doc.text("Extrato", 195, 20, { align: 'right' });
+    
+    doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
+    doc.text(`${startDateStr} - ${endDateStr}`, 195, 26, { align: 'right' });
+
+    doc.setDrawColor(220, 220, 220);
+    doc.line(14, 35, 195, 35);
+
+    // Client Info
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont("helvetica", "bold");
+    doc.text("Cliente:", 14, 45);
+    doc.setFont("helvetica", "normal");
+    doc.text(statementClient.name.toUpperCase(), 30, 45);
+
+    doc.setFont("helvetica", "bold");
+    doc.text("Documento:", 14, 52);
+    doc.setFont("helvetica", "normal");
+    doc.text(statementClient.cpfCnpj || '-', 36, 52);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text("Período:", 14, 59);
+    doc.setFont("helvetica", "normal");
+    doc.text(`${startDateStr} - ${endDateStr}`, 30, 59);
+
+    // Address Right Side
+    doc.setFont("helvetica", "bold");
+    doc.text("Endereço:", 120, 45);
+    doc.setFont("helvetica", "normal");
+    
+    let addressStr = '';
+    if (statementClient.address) {
+        addressStr = `${statementClient.address}${statementClient.number ? `, ${statementClient.number}` : ''}`;
+        if (statementClient.neighborhood) addressStr += `, ${statementClient.neighborhood}`;
+        let secondLine = [];
+        if (statementClient.cep) secondLine.push(statementClient.cep);
+        if (statementClient.city) secondLine.push(`${statementClient.city}${statementClient.state ? `, ${statementClient.state}` : ''}`);
+        if(secondLine.length > 0) addressStr += `\n${secondLine.join(', ')}`;
+    } else {
+        addressStr = statementClient.clinicName || 'Não informado';
+    }
+    
+    const splitAddr = doc.splitTextToSize(addressStr, 60);
+    doc.text(splitAddr, 140, 45);
+
+    doc.line(14, 65, 195, 65);
+
+    // Table
+    const tableBody: any[] = [];
+    tableBody.push([
+        { content: '', styles: { lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] } },
+        { content: 'Saldo anterior', styles: { fontStyle: 'normal', lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] } },
+        { content: '', styles: { lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] } },
+        { content: `R$ ${chronoHistory.previousBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, styles: { halign: 'left', fontStyle: 'normal', lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] } }
+    ]);
+
+    chronoHistory.history.forEach((item) => {
+        const isDebit = item.type === 'DEBIT';
+        const amountStr = isDebit ? `R$ -${item.amount.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` : `R$ ${item.amount.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`;
+        const textColor = isDebit ? [239, 68, 68] : [34, 197, 94]; 
+        
+        const hasSubItems = isDebit && item.job && item.job.items && item.job.items.length > 0;
+        
+        let description = '';
+        if (isDebit) {
+            const dentistName = (statementClient.name && statementClient.name.split(' ')[0]) || 'Dr.';
+            description = `${item.job?.osNumber || '-'} - Dr(a): ${dentistName.toUpperCase()} - Paciente: ${(item.job?.patientName || '').toUpperCase()}`;
+        } else {
+            description = item.description;
+        }
+
+        tableBody.push([
+            { content: new Date(item.date).toLocaleDateString('pt-BR'), styles: { lineWidth: { bottom: hasSubItems ? 0 : 0.1 } as any, lineColor: [220,220,220] } },
+            { content: description, styles: { lineWidth: { bottom: hasSubItems ? 0 : 0.1 } as any, lineColor: [220,220,220] } },
+            { content: amountStr, styles: { textColor: textColor, lineWidth: { bottom: hasSubItems ? 0 : 0.1 } as any, lineColor: [220,220,220] } },
+            { content: `R$ ${item.balanceAfter.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, styles: { halign: 'left', lineWidth: { bottom: hasSubItems ? 0 : 0.1 } as any, lineColor: [220,220,220] } }
+        ]);
+        
+        if (hasSubItems) {
+            item.job.items.forEach((subItem: any, subIndex: number) => {
+                const isLast = subIndex === item.job.items.length - 1;
+                tableBody.push([
+                    { content: '', styles: { lineWidth: { bottom: isLast ? 0.1 : 0 } as any, lineColor: [220,220,220] } },
+                    { content: `${subItem.quantity}      ${subItem.name.toUpperCase()}`, styles: { textColor: [100,100,100], fontSize: 8, lineWidth: { bottom: isLast ? 0.1 : 0 } as any, lineColor: [220,220,220] } },
+                    { content: `R$ ${(subItem.price * subItem.quantity).toLocaleString('pt-BR', {minimumFractionDigits: 2})}`, styles: { textColor: [100,100,100], fontSize: 8, lineWidth: { bottom: isLast ? 0.1 : 0 } as any, lineColor: [220,220,220] } },
+                    { content: '', styles: { lineWidth: { bottom: isLast ? 0.1 : 0 } as any, lineColor: [220,220,220] } }
+                ]);
+            });
+        }
+    });
+
+    autoTable(doc, {
+        startY: 70,
+        head: [['Data', 'Descrição', 'Valor', 'Saldo']],
+        body: tableBody,
+        theme: 'plain',
+        headStyles: { fontStyle: 'bold', fontSize: 9, fillColor: [255, 255, 255], textColor: [0, 0, 0], lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] },
+        styles: { fontSize: 8, cellPadding: { top: 3, bottom: 3, left: 2, right: 2 } },
+        columnStyles: { 0: { cellWidth: 25 }, 2: { halign: 'left', cellWidth: 35 }, 3: { halign: 'left', cellWidth: 35 } }
+    });
+
+    const finalY = (doc as any).lastAutoTable.finalY + 15;
+    const totalServices = chronoHistory.history.filter(i => i.type === 'DEBIT').reduce((acc, curr) => acc + curr.amount, 0);
+    const totalPayments = chronoHistory.history.filter(i => i.type !== 'DEBIT').reduce((acc, curr) => acc + curr.amount, 0);
+    const currentBalance = chronoHistory.history.length > 0 ? chronoHistory.history[chronoHistory.history.length - 1].balanceAfter : chronoHistory.previousBalance;
+
+    // Draw Summary Box aligned to right side
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    
+    const summaryX = 80;
+    const valX = 195;
+    let cY = finalY;
+
+    doc.text("Saldo anterior", summaryX, cY);
+    doc.setTextColor(239, 68, 68);
+    doc.text(`R$ ${chronoHistory.previousBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, valX, cY, { align: 'right' });
+    
+    cY += 8;
+    doc.setDrawColor(230, 230, 230);
+    doc.line(summaryX, cY - 4, valX, cY - 4);
+    
+    doc.setTextColor(0, 0, 0);
+    doc.text("Total de serviços", summaryX, cY);
+    doc.setTextColor(239, 68, 68);
+    doc.text(`R$ -${totalServices.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, valX, cY, { align: 'right' });
+
+    cY += 8;
+    doc.line(summaryX, cY - 4, valX, cY - 4);
+
+    doc.setTextColor(0, 0, 0);
+    doc.text("Total de pagamentos", summaryX, cY);
+    doc.setTextColor(34, 197, 94);
+    doc.text(`R$ ${totalPayments.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, valX, cY, { align: 'right' });
+
+    cY += 15;
+    doc.line(summaryX, cY - 10, valX, cY - 10);
+
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(10);
+    doc.text("Saldo atual no período", summaryX, cY);
+    const balanceColor = currentBalance < 0 ? [239, 68, 68] : [34, 197, 94];
+    doc.setTextColor(balanceColor[0], balanceColor[1], balanceColor[2] as number);
+    doc.text(`R$ ${currentBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, valX, cY, { align: 'right' });
+
+    doc.save(`Extrato_${statementClient.name.replace(/\s+/g, '_')}_${startDateStr.replace(/\//g,'-')}_a_${endDateStr.replace(/\//g,'-')}.pdf`);
+  };
+
+  const generateReceiptsPDF = async () => {
+      if (!statementClient || !currentOrg) return;
+
+      const doc = new jsPDF();
+      const sDate = filterStartDate ? new Date(`${filterStartDate}T00:00:00`) : new Date(0);
+      const eDate = filterEndDate ? new Date(`${filterEndDate}T23:59:59`) : new Date(8640000000000000);
+
+      const startDateStr = sDate.toLocaleDateString('pt-BR');
+      const endDateStr = eDate.toLocaleDateString('pt-BR');
+
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, 210, 35, 'F'); 
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(30, 41, 59);
+      doc.setFontSize(16);
+      doc.text("RECIBO DE PAGAMENTOS", 14, 25);
+      
+      doc.setFontSize(10);
+      doc.text("Cliente: ", 14, 45);
+      doc.setFont("helvetica", "normal");
+      doc.text(statementClient.name.toUpperCase(), 30, 45);
+      
+      doc.setFont("helvetica", "bold");
+      doc.text("Documento: ", 14, 52);
+      doc.setFont("helvetica", "normal");
+      doc.text(statementClient.cpfCnpj || '-', 36, 52);
+      
+      doc.setFont("helvetica", "bold");
+      doc.text("Período:", 14, 59);
+      doc.setFont("helvetica", "normal");
+      doc.text(`${startDateStr} - ${endDateStr}`, 30, 59);
+
+      let addressStr = '';
+      if (statementClient.address) {
+          addressStr = `${statementClient.address}${statementClient.number ? `, ${statementClient.number}` : ''}`;
+          if (statementClient.neighborhood) addressStr += `, ${statementClient.neighborhood}`;
+          let secondLine = [];
+          if (statementClient.cep) secondLine.push(statementClient.cep);
+          if (statementClient.city) secondLine.push(`${statementClient.city}${statementClient.state ? `, ${statementClient.state}` : ''}`);
+          if(secondLine.length > 0) addressStr += `\n${secondLine.join(', ')}`;
+      } else {
+          addressStr = statementClient.clinicName || 'Não informado';
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.text("Endereço: ", 120, 45);
+      doc.setFont("helvetica", "normal");
+      const splitAddr = doc.splitTextToSize(addressStr, 75);
+      doc.text(splitAddr, 140, 45);
+
+      doc.line(14, 65, 195, 65);
+
+      const filteredPayments = dentistPayments.filter(p => p.dentistId === statementClient.id && new Date(p.paymentDate) >= sDate && new Date(p.paymentDate) <= eDate);
+      
+      const tableBody: any[] = [];
+      let totalPaid = 0;
+
+      filteredPayments.forEach(p => {
+          totalPaid += p.amount;
+          tableBody.push([
+              new Date(p.paymentDate).toLocaleDateString('pt-BR'),
+              p.notes || 'Recebimento de valores',
+              `R$ ${p.amount.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`
+          ]);
+      });
+
+      tableBody.push([
+          { content: 'TOTAL', styles: { fontStyle: 'bold', halign: 'right' } },
+          '',
+          { content: `R$ ${totalPaid.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`, styles: { fontStyle: 'bold' } }
+      ]);
+
+      autoTable(doc, {
+          startY: 70,
+          head: [['Data', 'Observação / Forma de Pagamento', 'Valor']],
+          body: tableBody,
+          theme: 'plain',
+          headStyles: { fontStyle: 'bold', fontSize: 9, fillColor: [255, 255, 255], textColor: [0, 0, 0], lineWidth: { bottom: 0.1 } as any, lineColor: [220,220,220] },
+          styles: { fontSize: 8, cellPadding: { top: 3, bottom: 3, left: 2, right: 2 } },
+          columnStyles: { 0: { cellWidth: 30 }, 2: { cellWidth: 40 } }
+      });
+
+      const finalY = (doc as any).lastAutoTable.finalY + 20;
+      doc.setFontSize(9);
+      doc.text("_____________________________________________________", 105, finalY, { align: 'center' });
+      doc.text(currentOrg.name || 'Laboratório', 105, finalY + 5, { align: 'center' });
+      doc.text((currentOrg as any).document || '', 105, finalY + 10, { align: 'center' });
+
+      doc.save(`Recibos_${statementClient.name.replace(/\s+/g, '_')}_${startDateStr.replace(/\//g,'-')}_a_${endDateStr.replace(/\//g,'-')}.pdf`);
+  };
+
+  const handleSavePayment = async () => {
+    if (!statementClient || paymentAmount <= 0) return;
+    setIsSaving(true);
+    try {
+        await addDentistPayment({
+            dentistId: statementClient.id,
+            dentistName: statementClient.name,
+            amount: paymentAmount,
+            interest: paymentInterest,
+            fees: paymentFees,
+            discount: paymentDiscount,
+            paymentMethod: paymentMethod,
+            cardMachineId: (paymentMethod === 'CREDIT_CARD' || paymentMethod === 'DEBIT_CARD') ? paymentCardMachineId : undefined,
+            bankAccountId: paymentMethod === 'BANK_TRANSFER' ? paymentBankAccountId : undefined,
+            paymentDate: new Date(),
+            type: paymentType,
+            notes: paymentNotes,
+            attachmentUrl: paymentAttachmentUrl || undefined,
+            attachmentName: paymentAttachmentName || undefined
+        });
+        setPaymentAmount(0);
+        setPaymentInterest(0);
+        setPaymentFees(0);
+        setPaymentDiscount(0);
+        setPaymentCardMachineId('');
+        setPaymentBankAccountId('');
+        setPaymentNotes('');
+        setPaymentAttachmentUrl('');
+        setPaymentAttachmentName('');
+        setShowPaymentForm(false);
+    } catch (err) {
+        console.error(err);
+        alert("Erro ao salvar pagamento.");
+    } finally {
+        setIsSaving(false);
+    }
+  };
+
+  // --- ANALYTICS CALCULATIONS ---
+  const stats = useMemo(() => {
+    const paidFromJobs = jobs.filter(j => j.paymentStatus === 'PAID' || j.paymentStatus === 'VOUCHER').reduce((acc, curr) => acc + curr.totalValue, 0);
+    const paidRevenue = paidFromJobs; 
+
+    const pendingRevenue = jobs.filter(j => 
+        (j.status === JobStatus.COMPLETED || j.status === JobStatus.DELIVERED) && 
+        (j.paymentStatus === 'PENDING' || !j.paymentStatus) &&
+        !j.batchId && !j.asaasPaymentId
+    ).reduce((acc, curr) => acc + curr.totalValue, 0);
+
+    const inBatchesPending = billingBatches.filter(b => b.status === 'PENDING').reduce((acc, curr) => acc + curr.totalAmount, 0);
+
+    const totalExpenses = expenses.filter(e => e.status === 'PAID').reduce((acc, curr) => acc + curr.amount, 0);
+    
+    return { paidRevenue, pendingRevenue, inBatchesPending, totalExpenses, profit: paidRevenue - totalExpenses };
+  }, [jobs, expenses, billingBatches]);
+
+  const dentistSummary = useMemo(() => {
+    const map = new Map<string, any>();
+    
+    // Sets para verificar duplicações
+    const manualEmails = new Set<string>();
+    const manualDocs = new Set<string>();
+
+    const uniqueManual = manualDentists.map(d => {
+        if (d.email) manualEmails.add(d.email.toLowerCase().trim());
+        const cleanDoc = (d.cpfCnpj || '').replace(/\D/g, '');
+        if (cleanDoc) manualDocs.add(cleanDoc);
+        return d;
+    });
+
+    const uniqueOnline = allUsers.filter(u => u.role === UserRole.CLIENT).filter(u => {
+        const userEmail = u.email ? u.email.toLowerCase().trim() : '';
+        const userDoc = (u.cpfCnpj || '').replace(/\D/g, '');
+        
+        const isDuplicateEmail = userEmail && manualEmails.has(userEmail);
+        const isDuplicateDoc = userDoc && manualDocs.has(userDoc);
+        
+        // Check if ID already exists in manualDentists
+        const hasSameId = uniqueManual.some(m => m.id === u.id);
+
+        return !hasSameId && !isDuplicateEmail && !isDuplicateDoc;
+    });
+
+    const allDents = [...uniqueOnline, ...uniqueManual];
+    
+    allDents.forEach(d => {
+        map.set(d.id, { ...d, totalPending: 0, history: [], pendingJobs: [] });
+    });
+
+    jobs.forEach(job => {
+        let entry = map.get(job.dentistId);
+        if (!entry) {
+            entry = { id: job.dentistId, name: job.dentistName, totalPending: 0, history: [], pendingJobs: [] };
+            map.set(job.dentistId, entry);
+        }
+        
+        if (
+            (job.paymentStatus === 'PENDING' || !job.paymentStatus) && 
+            (job.status === JobStatus.COMPLETED || job.status === JobStatus.DELIVERED) &&
+            !job.batchId && !job.asaasPaymentId
+        ) {
+            entry.totalPending += job.totalValue;
+            entry.pendingJobs.push(job);
+        }
+    });
+
+    // Deduct manual payments/credits from totalPending for each dentist
+    dentistPayments.forEach(p => {
+        const entry = map.get(p.dentistId);
+        if (entry) {
+            const payAmount = p.type === 'DISCOUNT' ? Number(p.amount || 0) : (Number(p.amount || 0) + Number(p.discount || 0));
+            entry.totalPending -= payAmount;
+        }
+    });
+
+    return Array.from(map.values())
+        .map(d => ({ ...d, totalPending: Math.max(0, d.totalPending) }))
+        .filter(d => d.name.toLowerCase().includes(searchTerm.toLowerCase()))
+        .filter(d => d.totalPending > 0)
+        .sort((a, b) => b.totalPending - a.totalPending);
+  }, [jobs, allUsers, manualDentists, dentistPayments, searchTerm]);
+
+
+
+  const handleWithdrawFunds = async () => {
+      if (!currentOrg?.financialSettings?.balance || currentOrg.financialSettings.balance <= 0) {
+          alert("Você não possui saldo disponível para saque.");
+          return;
+      }
+      if (!window.confirm(`Deseja transferir R$ ${currentOrg.financialSettings.balance.toFixed(2)} para sua conta bancária cadastrada no Asaas?`)) return;
+      
+      setIsWithdrawing(true);
+      try {
+          await api.apiRequestWithdrawal(currentOrg.id, currentOrg.financialSettings.balance);
+          alert("Solicitação de transferência enviada com sucesso!");
+      } catch (err: any) {
+          alert("Erro ao solicitar saque: " + err.message);
+      } finally { setIsWithdrawing(false); }
+  };
+
+  const handleAddExpense = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!currentOrg) return;
+      try {
+          await api.apiAddExpense(currentOrg.id, {
+              ...expenseForm,
+              id: `exp_${Date.now()}`,
+              organizationId: currentOrg.id,
+              date: new Date(expenseForm.date),
+              createdAt: new Date()
+          } as any);
+          setShowExpenseModal(false);
+          setExpenseForm({ description: '', amount: 0, category: 'SUPPLIES', date: new Date().toISOString().split('T')[0], status: 'PAID' });
+      } catch (e) { alert("Erro ao salvar despesa."); }
+  };
+
+  const copyBoletoLink = (url: string, id: string) => {
+      navigator.clipboard.writeText(url);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  if (isFreeLab) {
+    const sDate = filterStartDate ? new Date(`${filterStartDate}T00:00:00`) : new Date(0);
+    const eDate = filterEndDate ? new Date(`${filterEndDate}T23:59:59`) : new Date();
+
+    const periodJobs = jobs.filter(j => {
+      if (j.origin !== 'ONLINE_ORDER' && j.origin !== 'ONLINE_REQUISITION') return false;
+      const d = new Date(j.createdAt);
+      return d >= sDate && d <= eDate;
+    });
+
+    const paidSum = periodJobs.filter(j => j.paymentStatus === 'PAID' || j.paymentStatus === 'VOUCHER').reduce((acc, c) => acc + c.totalValue, 0);
+    const pendingSum = periodJobs.filter(j => j.paymentStatus !== 'PAID' && j.paymentStatus !== 'VOUCHER').reduce((acc, c) => acc + c.totalValue, 0);
+
+    return (
+      <div className="space-y-6 pb-20 animate-in fade-in duration-500">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 flex items-center gap-2">
+              <Wallet className="text-blue-600" /> Extrato de Vendas - Loja Online
+            </h1>
+            <p className="text-slate-500 font-medium">Histórico e faturamento dos trabalhos vendidos na sua loja online.</p>
+          </div>
+          <button 
+            onClick={generateFreeLabReportPDF}
+            className="px-5 py-2.5 bg-blue-600 text-white font-black text-sm rounded-xl shadow-md hover:bg-blue-500 transition-all flex items-center gap-2"
+          >
+            <Download size={16} /> GERAR RELATÓRIO PDF
+          </button>
+        </div>
+
+        {/* STATS */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+            <p className="text-xs font-bold text-slate-400 uppercase mb-1">Receita Realizada (Paga)</p>
+            <h3 className="text-2xl font-black text-green-600">R$ {paidSum.toFixed(2)}</h3>
+          </div>
+          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+            <p className="text-xs font-bold text-slate-400 uppercase mb-1">Receita Pendente</p>
+            <h3 className="text-2xl font-black text-orange-600">R$ {pendingSum.toFixed(2)}</h3>
+          </div>
+          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+            <p className="text-xs font-bold text-slate-400 uppercase mb-1">Total de Pedidos no Período</p>
+            <h3 className="text-2xl font-black text-blue-600">{periodJobs.length}</h3>
+          </div>
+        </div>
+
+        {/* FILTERS */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+            <Filter size={16} className="text-slate-500" /> Filtrar por Período
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Data Início</label>
+              <input 
+                type="date" 
+                value={filterStartDate} 
+                onChange={(e) => setFilterStartDate(e.target.value)}
+                className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Data Fim</label>
+              <input 
+                type="date" 
+                value={filterEndDate} 
+                onChange={(e) => setFilterEndDate(e.target.value)}
+                className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* TABLE */}
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left">
+              <thead>
+                <tr className="bg-slate-50 text-slate-400 text-[10px] font-black uppercase border-b border-slate-100">
+                  <th className="px-6 py-4">OS / Pedido</th>
+                  <th className="px-6 py-4">Dentista</th>
+                  <th className="px-6 py-4">Paciente</th>
+                  <th className="px-6 py-4">Data Venda</th>
+                  <th className="px-6 py-4">Valor</th>
+                  <th className="px-6 py-4">Status OS</th>
+                  <th className="px-6 py-4">Pagamento</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm font-medium text-slate-700">
+                {periodJobs.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="text-center py-8 text-slate-400">
+                      Nenhum trabalho vendido no período selecionado.
+                    </td>
+                  </tr>
+                ) : (
+                  periodJobs.map((job) => (
+                    <tr key={job.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-6 py-4 font-bold text-slate-900">#{job.osNumber || job.id.substring(0, 6)}</td>
+                      <td className="px-6 py-4">{job.dentistName}</td>
+                      <td className="px-6 py-4">{job.patientName}</td>
+                      <td className="px-6 py-4 text-slate-500">{new Date(job.createdAt).toLocaleDateString('pt-BR')}</td>
+                      <td className="px-6 py-4 text-slate-900">R$ {(job.totalValue || 0).toFixed(2)}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black uppercase ${
+                          job.status === 'COMPLETED' || job.status === 'DELIVERED' 
+                            ? 'bg-green-100 text-green-700' 
+                            : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {job.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black uppercase ${
+                          (job.paymentStatus === 'PAID' || job.paymentStatus === 'VOUCHER') 
+                            ? 'bg-green-100 text-green-700' 
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {(job.paymentStatus === 'PAID' || job.paymentStatus === 'VOUCHER') ? 'Pago' : 'Pendente'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 pb-20 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h1 className="text-2xl font-black text-slate-900 flex items-center gap-2"><Wallet className="text-blue-600" /> Financeiro do Laboratório</h1>
+          <p className="text-slate-500 font-medium">Gestão de faturamento acumulado e fluxo de caixa.</p>
+        </div>
+      </div>
+
+      {/* ASAAS WALLET QUICK INFO (Sempre Visível) */}
+      {currentOrg?.financialSettings?.asaasWalletId && (
+          <div className="bg-slate-900 rounded-3xl p-6 text-white shadow-xl flex flex-col md:flex-row justify-between items-center gap-8 relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none"><ShieldCheck size={120} /></div>
+              <div className="flex-1 text-center md:text-left relative z-10">
+                  <div className="flex items-center justify-center md:justify-start gap-2 text-blue-400 font-black text-[10px] uppercase tracking-widest mb-2">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div> Conta Digital Ativa (Split ProTrack)
+                  </div>
+                  <h2 className="text-sm font-bold text-slate-400 uppercase">Saldo Disponível para Saque</h2>
+                  <p className="text-4xl font-black text-white mt-1">R$ {(currentOrg.financialSettings.balance || 0).toFixed(2)}</p>
+                  <p className="text-xs text-slate-400 mt-2 font-medium flex items-center justify-center md:justify-start gap-2">
+                      <Clock size={12} /> Lançamentos a liberar: <strong>R$ {(currentOrg.financialSettings.pendingBalance || 0).toFixed(2)}</strong>
+                  </p>
+              </div>
+              <div className="flex flex-col gap-2 w-full md:w-auto relative z-10">
+                  <button 
+                    onClick={handleWithdrawFunds}
+                    disabled={isWithdrawing || !currentOrg.financialSettings.balance}
+                    className="px-8 py-3 bg-blue-600 text-white font-black rounded-2xl shadow-lg shadow-blue-900/40 hover:bg-blue-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
+                  >
+                      {isWithdrawing ? <Loader2 className="animate-spin" size={20}/> : <><ArrowUpCircle size={20}/> SOLICITAR SAQUE</>}
+                  </button>
+                  <a href="https://www.asaas.com" target="_blank" rel="noreferrer" className="text-center text-[10px] font-bold text-slate-400 hover:text-white flex items-center justify-center gap-1 transition-colors">
+                      Gerenciar via Painel Asaas <ExternalLink size={10}/>
+                  </a>
+              </div>
+          </div>
+      )}
+
+       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+           <div className="flex bg-slate-200 p-1 rounded-2xl w-fit overflow-x-auto no-scrollbar">
+              <button onClick={() => setActiveTab('DASHBOARD')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'DASHBOARD' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Métricas</button>
+              <button onClick={() => setActiveTab('RECEIVABLES')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'RECEIVABLES' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Extrato p/ Faturamento</button>
+              <button onClick={() => setActiveTab('BATCHES')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'BATCHES' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Faturas & Boletos</button>
+              <button onClick={() => setActiveTab('EXPENSES')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'EXPENSES' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Despesas</button>
+              <button onClick={() => setActiveTab('REPORTS')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'REPORTS' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Relatórios</button>
+              <button onClick={() => setActiveTab('SETTINGS')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'SETTINGS' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}>Configurações</button>
+          </div>
+          
+
+      </div>
+
+      {activeTab === 'DASHBOARD' && (
+          <div className="space-y-8 animate-in fade-in duration-300">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">Receita Realizada (Paga)</p>
+                      <h3 className="text-2xl font-black text-green-600">R$ {stats.paidRevenue.toFixed(2)}</h3>
+                  </div>
+                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">Faturado Pendente (Boletos)</p>
+                      <h3 className="text-2xl font-black text-orange-600">R$ {stats.inBatchesPending.toFixed(2)}</h3>
+                  </div>
+                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">A Faturar (Concluídos)</p>
+                      <h3 className="text-2xl font-black text-blue-600">R$ {stats.pendingRevenue.toFixed(2)}</h3>
+                  </div>
+                   <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">Total Despesas Pagas</p>
+                      <h3 className="text-2xl font-black text-red-500">R$ {stats.totalExpenses.toFixed(2)}</h3>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {activeTab === 'RECEIVABLES' && (
+          <div className="space-y-6 animate-in slide-in-from-right-2">
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                  <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
+                      <div>
+                        <h2 className="text-xl font-bold text-slate-800">Prontos para Cobrança</h2>
+                        <p className="text-sm text-slate-500">Apenas trabalhos internos **concluídos** que ainda não foram faturados.</p>
+                      </div>
+                      <div className="relative w-full md:w-80">
+                          <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
+                          <input placeholder="Buscar dentista..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+                      </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {dentistSummary.map(d => {
+                          const clientBatches = billingBatches.filter(b => b.dentistId === d.id);
+                          const gBatches = clientBatches.filter(b => b.status === 'PENDING');
+                          const eBatches = clientBatches.filter(b => b.status === 'OVERDUE');
+                          const pBatches = clientBatches.filter(b => b.status === 'PAID');
+
+                          return (
+                              <div key={d.id} onClick={() => { setStatementClient(d); setShowStatement(true); }} className="p-5 border border-slate-100 rounded-2xl hover:border-blue-500 cursor-pointer transition-all bg-slate-50 group flex flex-col justify-between">
+                                  <div className="flex items-center gap-3 mb-4">
+                                      <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center font-black text-blue-600 shadow-sm">{d.name.charAt(0)}</div>
+                                      <div className="flex-1 overflow-hidden"><p className="font-bold text-slate-800 truncate">{d.name}</p><p className="text-[10px] text-slate-400 font-bold uppercase truncate">{d.clinicName || 'Consultório'}</p></div>
+                                      <div className="flex gap-1">
+                                          <ChevronRight size={20} className="text-slate-300 group-hover:text-blue-500" />
+                                      </div>
+                                  </div>
+                                  <div className="grid grid-cols-1 gap-2 border-t border-slate-200/50 pt-4">
+                                      <p className="text-[9px] font-bold text-slate-400 uppercase">Débito na Gaveta</p>
+                                      <p className="text-xl font-black text-red-600">R$ {d.totalPending.toFixed(2)}</p>
+                                  </div>
+
+                                  {/* Estatísticas de Boletos */}
+                                  <div className="bg-white p-3 rounded-xl border border-slate-100 flex justify-between items-center text-[9px] uppercase font-black text-slate-500 gap-1 mt-3">
+                                      <div className="text-center flex-1 border-r border-slate-100">
+                                          <span className="block text-[8px] text-slate-400 font-bold uppercase">Gerados</span>
+                                          <span className="text-blue-600 font-black text-xs">{gBatches.length} (R$ {gBatches.reduce((sum, b) => sum + b.totalAmount, 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })})</span>
+                                      </div>
+                                      <div className="text-center flex-1 border-r border-slate-100">
+                                          <span className="block text-[8px] text-slate-400 font-bold uppercase">Expirados</span>
+                                          <span className="text-red-500 font-black text-xs">{eBatches.length} (R$ {eBatches.reduce((sum, b) => sum + b.totalAmount, 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })})</span>
+                                      </div>
+                                      <div className="text-center flex-1">
+                                          <span className="block text-[8px] text-slate-400 font-bold uppercase">Pagos</span>
+                                          <span className="text-green-600 font-black text-xs">{pBatches.length} (R$ {pBatches.reduce((sum, b) => sum + b.totalAmount, 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })})</span>
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                      {dentistSummary.length === 0 && (
+                          <div className="col-span-full py-20 text-center text-slate-400 border-2 border-dashed rounded-3xl italic">
+                              Nenhum trabalho concluído aguardando faturamento.
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {activeTab === 'BATCHES' && (
+          <div className="space-y-6 animate-in slide-in-from-right-2">
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                  <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2"><Receipt className="text-blue-600"/> Histórico de Faturas e Boletos</h3>
+                  
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
+                            <tr>
+                                <th className="p-4">Fatura ID</th>
+                                <th className="p-4">Dentista</th>
+                                <th className="p-4">Vencimento</th>
+                                <th className="p-4">Valor Total</th>
+                                <th className="p-4">Status</th>
+                                <th className="p-4 text-right">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-sm">
+                            {billingBatches.map(batch => (
+                                <tr key={batch.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="p-4 font-mono font-bold text-slate-500 uppercase">{batch.id.substring(0, 8)}...</td>
+                                    <td className="p-4 font-bold text-slate-800">{batch.dentistName}</td>
+                                    <td className="p-4 text-slate-600 font-medium">{new Date(batch.dueDate).toLocaleDateString()}</td>
+                                    <td className="p-4 font-black text-slate-800">R$ {batch.totalAmount.toFixed(2)}</td>
+                                    <td className="p-4">
+                                        <span className={`px-2 py-1 rounded-full text-[10px] font-black ${
+                                            batch.status === 'PAID' ? 'bg-green-100 text-green-700' : 
+                                            batch.status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'
+                                        }`}>
+                                            {batch.status === 'PAID' ? 'PAGO' : batch.status === 'OVERDUE' ? 'VENCIDO' : 'AGUARDANDO'}
+                                        </span>
+                                    </td>
+                                    <td className="p-4 text-right">
+                                        <div className="flex justify-end gap-2">
+                                            {batch.invoiceUrl && (
+                                                <>
+                                                    <button 
+                                                        onClick={() => copyBoletoLink(batch.invoiceUrl!, batch.id)}
+                                                        className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${copiedId === batch.id ? 'bg-green-600 text-white' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                                                    >
+                                                        {copiedId === batch.id ? <Check size={14}/> : <Copy size={14}/>} {copiedId === batch.id ? 'Copiado' : 'Link Boleto'}
+                                                    </button>
+                                                    <a href={batch.invoiceUrl} target="_blank" rel="noreferrer" className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100">
+                                                        <ExternalLink size={16} />
+                                                    </a>
+                                                </>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {activeTab === 'EXPENSES' && (
+          <div className="space-y-6 animate-in slide-in-from-right-2">
+              <div className="flex justify-end">
+                  <button onClick={() => setShowExpenseModal(true)} className="px-6 py-3 bg-red-600 text-white font-bold rounded-2xl shadow-lg flex items-center gap-2 hover:bg-red-700 transition-all">
+                      <Plus size={20} /> LANÇAR DESPESA
+                  </button>
+              </div>
+
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                  <table className="w-full text-left">
+                      <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
+                          <tr>
+                              <th className="p-4">Data</th>
+                              <th className="p-4">Descrição</th>
+                              <th className="p-4">Categoria</th>
+                              <th className="p-4">Valor</th>
+                              <th className="p-4">Status</th>
+                              <th className="p-4 text-right">Ações</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                          {expenses.map(exp => (
+                              <tr key={exp.id} className="hover:bg-slate-50 transition-colors">
+                                  <td className="p-4 text-sm font-medium text-slate-600">{new Date(exp.date).toLocaleDateString()}</td>
+                                  <td className="p-4 font-bold text-slate-800">{exp.description}</td>
+                                  <td className="p-4"><span className="text-[10px] font-black bg-slate-100 px-2 py-1 rounded text-slate-500">{exp.category}</span></td>
+                                  <td className="p-4 font-black text-red-600">R$ {exp.amount.toFixed(2)}</td>
+                                  <td className="p-4"><span className={`px-2 py-1 rounded-full text-[10px] font-black ${exp.status === 'PAID' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>{exp.status === 'PAID' ? 'PAGA' : 'PENDENTE'}</span></td>
+                                  <td className="p-4 text-right">
+                                      <button onClick={() => api.apiDeleteExpense(currentOrg!.id, exp.id)} className="p-2 text-slate-300 hover:text-red-500 rounded-lg"><Trash2 size={18}/></button>
+                                  </td>
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+      )}
+
+      {activeTab === 'REPORTS' && (
+          <div className="space-y-6 animate-in slide-in-from-right-2">
+              {/* Filters Panel */}
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                      <div>
+                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                              <FileText className="text-blue-600" /> Relatório de Movimentações
+                          </h3>
+                          <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-0.5">Filtre, analise e exporte o fluxo financeiro</p>
+                      </div>
+                      <div className="flex items-center gap-2 w-full md:w-auto">
+                          <button 
+                              onClick={exportReportPDF}
+                              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-xs font-black uppercase transition-all shadow-sm cursor-pointer"
+                          >
+                              <FileText size={16} /> Exportar PDF
+                          </button>
+                          <button 
+                              onClick={exportReportCSV}
+                              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 bg-green-50 text-green-600 hover:bg-green-100 rounded-xl text-xs font-black uppercase transition-all shadow-sm cursor-pointer"
+                          >
+                              <Download size={16} /> Exportar CSV
+                          </button>
+                      </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 pt-2">
+                      <div className="lg:col-span-2">
+                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Buscar por Descrição/Dentista</label>
+                          <input 
+                              type="text"
+                              value={reportSearchTerm}
+                              onChange={e => setReportSearchTerm(e.target.value)}
+                              placeholder="Pesquisar..."
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-xs font-bold focus:ring-2 focus:ring-blue-500"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Data Início</label>
+                          <input 
+                              type="date"
+                              value={reportStartDate}
+                              onChange={e => setReportStartDate(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-xs font-bold focus:ring-2 focus:ring-blue-500"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Data Fim</label>
+                          <input 
+                              type="date"
+                              value={reportEndDate}
+                              onChange={e => setReportEndDate(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-xs font-bold focus:ring-2 focus:ring-blue-500"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Tipo de Entrada</label>
+                          <select 
+                              value={reportType}
+                              onChange={e => setReportType(e.target.value as any)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-xs font-bold focus:ring-2 focus:ring-blue-500"
+                          >
+                              <option value="ALL">Todos os Tipos</option>
+                              <option value="RECEBIMENTO">Recebimentos</option>
+                              <option value="DESPESA">Despesas</option>
+                          </select>
+                      </div>
+                      <div>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">Origem/Canal</label>
+                          <select 
+                              value={reportSource}
+                              onChange={e => setReportSource(e.target.value as any)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-xs font-bold focus:ring-2 focus:ring-blue-500"
+                          >
+                              <option value="ALL">Todos</option>
+                              <option value="MANUAL_OR_ASAAS">Faturas (Manual/Asaas)</option>
+                              <option value="ONLINE_STORE">Loja Online (Pedidos)</option>
+                              <option value="EXPENSE">Despesas</option>
+                          </select>
+                      </div>
+                  </div>
+              </div>
+
+              {/* Statistics Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                  <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Recebimentos Realizados</p>
+                      <h4 className="text-xl font-black text-green-600">R$ {reportStats.totalInflows.toFixed(2)}</h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Despesas Pagas</p>
+                      <h4 className="text-xl font-black text-red-500">R$ {reportStats.totalOutflows.toFixed(2)}</h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Saldo Líquido Período</p>
+                      <h4 className={`text-xl font-black ${reportStats.netBalance >= 0 ? 'text-blue-600' : 'text-rose-600'}`}>
+                          R$ {reportStats.netBalance.toFixed(2)}
+                      </h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Recebimentos Pendentes</p>
+                      <h4 className="text-xl font-black text-orange-600">R$ {reportStats.pendingInflows.toFixed(2)}</h4>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Despesas Pendentes</p>
+                      <h4 className="text-xl font-black text-amber-600">R$ {reportStats.pendingOutflows.toFixed(2)}</h4>
+                  </div>
+              </div>
+
+              {/* Movements Table */}
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                      <span className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                          Mostrando {reportMovements.length} registro(s)
+                      </span>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                          <thead>
+                              <tr className="bg-slate-50 border-b border-slate-100">
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase">Data</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase">Descrição</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase">Tipo</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase">Canal / Origem</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase">Cliente</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase text-right">Valor</th>
+                                  <th className="p-4 text-[10px] font-black text-slate-400 uppercase text-center">Status</th>
+                              </tr>
+                          </thead>
+                          <tbody>
+                              {reportMovements.length === 0 ? (
+                                  <tr>
+                                      <td colSpan={7} className="p-12 text-center text-slate-400 font-bold">
+                                          Nenhuma movimentação encontrada para os filtros selecionados.
+                                      </td>
+                                  </tr>
+                              ) : (
+                                  reportMovements.map(m => (
+                                      <tr key={`${m.source}-${m.id}`} className="hover:bg-slate-50 border-b border-slate-100 transition-colors">
+                                          <td className="p-4 text-xs font-bold text-slate-500">
+                                              {m.date.toLocaleDateString('pt-BR')}
+                                          </td>
+                                          <td className="p-4 text-xs font-bold text-slate-800 max-w-xs truncate">
+                                              {m.description}
+                                          </td>
+                                          <td className="p-4">
+                                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${
+                                                  m.type === 'RECEBIMENTO' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
+                                              }`}>
+                                                  {m.type === 'RECEBIMENTO' ? 'RECEBIMENTO' : 'DESPESA'}
+                                              </span>
+                                          </td>
+                                          <td className="p-4 text-xs font-bold text-slate-600">
+                                              {m.category}
+                                          </td>
+                                          <td className="p-4 text-xs font-bold text-slate-500">
+                                              {m.dentistName}
+                                          </td>
+                                          <td className={`p-4 text-xs font-black text-right ${
+                                              m.type === 'RECEBIMENTO' ? 'text-green-600' : 'text-red-600'
+                                          }`}>
+                                              {m.type === 'RECEBIMENTO' ? '+' : '-'} R$ {m.amount.toFixed(2)}
+                                          </td>
+                                          <td className="p-4 text-center">
+                                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${
+                                                  m.status === 'PAID' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                              }`}>
+                                                  {m.status === 'PAID' ? 'PAGO' : 'PENDENTE'}
+                                              </span>
+                                          </td>
+                                      </tr>
+                                  ))
+                              )}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* MODAL: SELEÇÃO DE TRABALHOS P/ FATURAMENTO */}
+      {activeTab === 'SETTINGS' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in slide-in-from-right-2">
+              {/* Maquinas de Cartão */}
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-6">
+                  <div className="flex justify-between items-center">
+                      <h3 className="text-lg font-black text-slate-800 flex items-center gap-2"><CreditCard className="text-blue-600"/> Máquinas de Cartão</h3>
+                      <button 
+                        onClick={() => {
+                            const name = prompt("Nome da Máquina (Ex: Moderninha, Stone):");
+                            if (name) addCardMachine({ name, active: true });
+                        }}
+                        className="p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100"
+                      >
+                          <Plus size={20}/>
+                      </button>
+                  </div>
+                  <div className="space-y-2">
+                      {cardMachines.map(m => (
+                          <div key={m.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group">
+                              <span className="font-bold text-slate-700">{m.name}</span>
+                              <div className="flex items-center gap-2">
+                                  <button onClick={() => deleteCardMachine(m.id)} className="p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
+                              </div>
+                          </div>
+                      ))}
+                      {cardMachines.length === 0 && <p className="text-sm text-slate-400 italic text-center py-4">Nenhuma máquina cadastrada.</p>}
+                  </div>
+              </div>
+
+              {/* Contas Bancárias */}
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-6">
+                  <div className="flex justify-between items-center">
+                      <h3 className="text-lg font-black text-slate-800 flex items-center gap-2"><Building className="text-blue-600"/> Contas Bancárias</h3>
+                      <button 
+                        onClick={() => {
+                            const name = prompt("Nome da Conta (Ex: Itau, Nubank, Banco do Brasil):");
+                            if (name) addBankAccount({ name, active: true });
+                        }}
+                        className="p-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100"
+                      >
+                          <Plus size={20}/>
+                      </button>
+                  </div>
+                  <div className="space-y-2">
+                      {bankAccounts.map(b => (
+                          <div key={b.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group">
+                              <span className="font-bold text-slate-700">{b.name}</span>
+                              <div className="flex items-center gap-2">
+                                  <button onClick={() => deleteBankAccount(b.id)} className="p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
+                              </div>
+                          </div>
+                      ))}
+                      {bankAccounts.length === 0 && <p className="text-sm text-slate-400 italic text-center py-4">Nenhuma conta cadastrada.</p>}
+                  </div>
+              </div>
+          </div>
+      )}
+      {/* MODAL: NOVA DESPESA */}
+      {showExpenseModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 animate-in zoom-in duration-200">
+                  <div className="flex justify-between items-center mb-6 border-b pb-4">
+                      <h3 className="text-xl font-black text-slate-800">Lançar Nova Despesa</h3>
+                      <button onClick={() => setShowExpenseModal(false)} className="p-2 text-slate-400 hover:text-slate-600 transition-colors"><X size={24}/></button>
+                  </div>
+                  <form onSubmit={handleAddExpense} className="space-y-4">
+                      <div>
+                          <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Descrição</label>
+                          <input required value={expenseForm.description} onChange={e => setExpenseForm({...expenseForm, description: e.target.value})} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500" placeholder="Ex: Compra de Resina" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Valor (R$)</label>
+                            <input type="number" required value={expenseForm.amount || ''} onChange={e => setExpenseForm({...expenseForm, amount: parseFloat(e.target.value)})} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500" placeholder="0.00" />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Data</label>
+                            <input type="date" required value={expenseForm.date} onChange={e => setExpenseForm({...expenseForm, date: e.target.value})} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-red-500" />
+                          </div>
+                      </div>
+                      <button type="submit" className="w-full py-4 bg-red-600 text-white font-black rounded-2xl shadow-xl hover:bg-red-700 transition-all transform active:scale-95 flex items-center justify-center gap-2">
+                        <DollarSign size={20}/> REGISTRAR SAÍDA
+                      </button>
+                  </form>
+              </div>
+          </div>
+      )}
+
+      {/* MODAL: EXTRATO COMPLETO (SINC COM DENTISTS.TSX) */}
+      {showStatement && statementClient && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+                    <div className="bg-slate-50 rounded-[40px] shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col animate-in zoom-in duration-300 overflow-hidden border border-white">
+                        {/* HEADER */}
+                        <div className="p-8 border-b border-slate-100 flex justify-between items-start bg-white relative">
+                            <div className="flex items-center gap-6">
+                                <div className="w-16 h-16 bg-blue-600 rounded-3xl flex items-center justify-center text-white shadow-2xl shadow-blue-200">
+                                    <History size={32} />
+                                </div>
+                                <div>
+                                    <h3 className="text-2xl font-black text-slate-800 tracking-tight">{statementClient.name}</h3>
+                                    <div className="flex items-center gap-3 mt-1">
+                                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest bg-blue-50 px-2 py-1 rounded-lg">Financeiro Unificado</span>
+                                        <span className="text-xs text-slate-400 font-bold">• {statementClient.clinicName || 'Consultório'}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-4">
+                                <button onClick={() => setShowStatement(false)} className="p-3 hover:bg-slate-100 rounded-2xl transition-all">
+                                    <X size={24} className="text-slate-400" />
+                                </button>
+                                <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-2xl">
+                                    <button 
+                                        onClick={() => setActiveSubTab('EXTRATO')}
+                                        className={`px-6 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeSubTab === 'EXTRATO' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                                    >
+                                        Extrato
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveSubTab('RECEBIMENTOS')}
+                                        className={`px-6 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeSubTab === 'RECEBIMENTOS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                                    >
+                                        Recebimentos
+                                    </button>
+                                    <button 
+                                        onClick={() => setActiveSubTab('FATURAS')}
+                                        className={`px-6 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeSubTab === 'FATURAS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                                    >
+                                        Faturas/Boletos
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* CONTENT */}
+                        <div className="flex-1 overflow-y-auto p-8 bg-slate-50/50 relative">
+                            {isLoadingStatement && (
+                                <div className="absolute inset-0 z-10 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center">
+                                    <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
+                                    <p className="text-sm font-black text-slate-800 uppercase tracking-widest">Sincronizando Dados...</p>
+                                </div>
+                            )}
+
+                            {activeSubTab === 'EXTRATO' && (
+                                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex justify-between items-center bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-100">
+                                                <input 
+                                                    type="date"
+                                                    value={filterStartDate}
+                                                    onChange={(e) => setFilterStartDate(e.target.value)}
+                                                    className="px-4 py-2 bg-transparent text-sm font-bold text-slate-700 outline-none"
+                                                />
+                                                <span className="text-slate-400 font-bold px-2">até</span>
+                                                <input 
+                                                    type="date"
+                                                    value={filterEndDate}
+                                                    onChange={(e) => setFilterEndDate(e.target.value)}
+                                                    className="px-4 py-2 bg-transparent text-sm font-bold text-slate-700 outline-none"
+                                                />
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={generateStatementPDF}
+                                            className="px-8 py-3 bg-slate-900 text-white text-[10px] font-black uppercase rounded-2xl hover:bg-slate-800 transition-all flex items-center gap-2 shadow-xl shadow-slate-200"
+                                        >
+                                            <Download size={16} /> Exportar PDF
+                                        </button>
+                                    </div>
+
+                                    <div className="bg-white rounded-[32px] border border-slate-100 shadow-sm overflow-hidden">
+                                        <table className="w-full text-left">
+                                            <thead className="bg-slate-50 border-b border-slate-100">
+                                                <tr>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Data</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Lançamento</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Valor</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Saldo</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-50">
+                                                <tr className="bg-slate-50/50 font-bold border-b border-slate-200">
+                                                    <td className="px-6 py-4 text-xs text-slate-400">
+                                                        {filterStartDate ? new Date(`${filterStartDate}T00:00:00`).toLocaleDateString('pt-BR') : '-'}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-xs text-slate-500 uppercase tracking-widest">Saldo Anterior Carregado</td>
+                                                    <td className="px-6 py-4 text-right text-xs">-</td>
+                                                    <td className={`px-6 py-4 text-right text-xs font-black ${chronoHistory.previousBalance < 0 ? 'text-red-500' : 'text-green-600'}`}>
+                                                        R$ {chronoHistory.previousBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                    </td>
+                                                </tr>
+                                                {chronoHistory.history.length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={4} className="px-6 py-12 text-center text-slate-400 font-bold italic bg-slate-50/10">
+                                                            Nenhum registro encontrado neste período.
+                                                        </td>
+                                                    </tr>
+                                                ) : (
+                                                    chronoHistory.history.slice().reverse().map((item, idx) => (
+                                                        <tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                                                            <td className="px-6 py-4 text-xs font-bold text-slate-500">
+                                                                {new Date(item.date).toLocaleDateString('pt-BR')}
+                                                            </td>
+                                                            <td className="px-6 py-4">
+                                                                <div className="flex flex-col gap-1">
+                                                                    <div className="flex items-center gap-3">
+                                                                        <div className={`p-2 rounded-lg ${item.type === 'DEBIT' ? 'bg-red-50 text-red-500' : 'bg-green-50 text-green-500'}`}>
+                                                                            {item.type === 'DEBIT' ? <ArrowDownCircle size={14} /> : <ArrowUpCircle size={14} />}
+                                                                        </div>
+                                                                        <span className="text-xs font-black text-slate-800">{item.description}</span>
+                                                                    </div>
+                                                                    {item.type === 'DEBIT' && item.job && (
+                                                                        <div className="ml-10 space-y-1">
+                                                                            {item.job.items.map((it:any, iIdx:number) => (
+                                                                                <div key={iIdx} className="flex items-center gap-4 text-[9px] font-bold text-slate-400 uppercase">
+                                                                                    <span>{it.quantity} x {it.name}</span>
+                                                                                    <span className="text-slate-300">R$ {it.price.toFixed(2)}</span>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                            <td className={`px-6 py-4 text-xs font-black text-right ${item.type === 'DEBIT' ? 'text-red-600' : 'text-green-600'}`}>
+                                                                {item.type === 'DEBIT' ? '-' : '+'} R$ {item.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                            </td>
+                                                            <td className={`px-6 py-4 text-xs font-black text-right ${item.balanceAfter < 0 ? 'text-red-500' : 'text-green-600'}`}>
+                                                                R$ {item.balanceAfter.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSubTab === 'RECEBIMENTOS' && (
+                                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex justify-between items-center">
+                                        <h4 className="text-sm font-black text-slate-800 uppercase tracking-widest">Histórico de Recebimentos</h4>
+                                        <div className="flex gap-2">
+                                            <button 
+                                                onClick={generateReceiptsPDF}
+                                                className="px-4 py-2 bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase rounded-xl hover:bg-indigo-100 transition-all flex items-center gap-2"
+                                            >
+                                                <Printer size={14} />
+                                                Recibo em PDF
+                                            </button>
+                                            <button 
+                                                onClick={() => setShowPaymentForm(!showPaymentForm)}
+                                                className="px-4 py-2 bg-green-600 text-white text-[10px] font-black uppercase rounded-xl hover:bg-green-700 transition-all shadow-lg shadow-green-100 flex items-center gap-2"
+                                            >
+                                                {showPaymentForm ? <Trash2 size={14} /> : <Plus size={14} />}
+                                                Novo Recebimento Manual
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {showPaymentForm && (
+                                        <div className="bg-white p-6 rounded-2xl border-2 border-green-200 animate-in slide-in-from-top-4 duration-300">
+                                            <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Valor Recebido (R$)</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={paymentAmount || ''}
+                                                        onChange={e => setPaymentAmount(parseFloat(e.target.value) || 0)}
+                                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-black text-slate-700"
+                                                        placeholder="0,00"
+                                                    />
+                                                </div>
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest text-red-500">Juros/Mora (+)</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={paymentInterest || ''}
+                                                        onChange={e => setPaymentInterest(parseFloat(e.target.value) || 0)}
+                                                        className="w-full px-4 py-2.5 bg-red-50/50 border border-red-100 rounded-xl focus:ring-2 focus:ring-red-500 outline-none font-bold text-red-700"
+                                                        placeholder="0,00"
+                                                    />
+                                                </div>
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest text-green-600">Desconto (-)</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={paymentDiscount || ''}
+                                                        onChange={e => setPaymentDiscount(parseFloat(e.target.value) || 0)}
+                                                        className="w-full px-4 py-2.5 bg-green-50/50 border border-green-100 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-green-700"
+                                                        placeholder="0,00"
+                                                    />
+                                                </div>
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest text-orange-600">Taxas (-)</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={paymentFees || ''}
+                                                        onChange={e => setPaymentFees(parseFloat(e.target.value) || 0)}
+                                                        className="w-full px-4 py-2.5 bg-orange-50/50 border border-orange-100 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none font-bold text-orange-700"
+                                                        placeholder="0,00"
+                                                    />
+                                                </div>
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Forma</label>
+                                                    <select 
+                                                        value={paymentMethod}
+                                                        onChange={e => setPaymentMethod(e.target.value as any)}
+                                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-slate-700 h-[46px]"
+                                                    >
+                                                        <option value="PIX">PIX</option>
+                                                        <option value="CASH">Dinheiro</option>
+                                                        <option value="CREDIT_CARD">Cartão de Crédito</option>
+                                                        <option value="DEBIT_CARD">Cartão de Débito</option>
+                                                        <option value="BANK_TRANSFER">Transferência Bancária</option>
+                                                        <option value="BOLETO">Boleto (Pago)</option>
+                                                        <option value="DISCOUNT">Desconto/Cortesia</option>
+                                                    </select>
+                                                </div>
+
+                                                {(paymentMethod === 'CREDIT_CARD' || paymentMethod === 'DEBIT_CARD') && (
+                                                    <div className="md:col-span-1 animate-in slide-in-from-top-2">
+                                                        <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Máquina</label>
+                                                        <select 
+                                                            value={paymentCardMachineId}
+                                                            onChange={e => setPaymentCardMachineId(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-blue-50 border border-blue-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-700 h-[46px]"
+                                                        >
+                                                            <option value="">Selecione...</option>
+                                                            {cardMachines.map(m => (
+                                                                <option key={m.id} value={m.id}>{m.name}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                )}
+
+                                                {paymentMethod === 'BANK_TRANSFER' && (
+                                                    <div className="md:col-span-1 animate-in slide-in-from-top-2">
+                                                        <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Conta</label>
+                                                        <select 
+                                                            value={paymentBankAccountId}
+                                                            onChange={e => setPaymentBankAccountId(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-blue-50 border border-blue-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-700 h-[46px]"
+                                                        >
+                                                            <option value="">Selecione...</option>
+                                                            {bankAccounts.map(b => (
+                                                                <option key={b.id} value={b.id}>{b.name}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                )}
+
+                                                <div className="md:col-span-1">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest italic">Total Líquido</label>
+                                                    <div className="w-full px-4 py-2.5 bg-slate-200 border border-slate-300 rounded-xl font-black text-slate-800 h-[46px] flex items-center">
+                                                        R$ {(paymentAmount + paymentInterest - paymentDiscount - paymentFees).toFixed(2)}
+                                                    </div>
+                                                </div>
+                                                <div className="md:col-span-full">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Observações/Ref.</label>
+                                                    <input 
+                                                        value={paymentNotes}
+                                                        onChange={e => setPaymentNotes(e.target.value)}
+                                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-slate-700"
+                                                        placeholder="Ex: Ref. OS 123, Promoção especial..."
+                                                    />
+                                                </div>
+                                                <div className="md:col-span-full border-t border-slate-100 pt-3">
+                                                    <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest flex items-center gap-1.5">
+                                                        <FileText size={12} /> Comprovante de Recebimento
+                                                    </label>
+                                                    <div className="mt-1 flex items-center gap-3 font-sans">
+                                                        <label className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-black uppercase rounded-xl transition-all border border-slate-200">
+                                                            {uploadingAttachment ? (
+                                                                <>
+                                                                    <Loader2 className="animate-spin" size={14} />
+                                                                    Enviando...
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Plus size={14} /> Selecionar Comprovante
+                                                                </>
+                                                            )}
+                                                            <input 
+                                                                type="file" 
+                                                                accept="image/*,application/pdf"
+                                                                className="hidden" 
+                                                                onChange={async (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (!file) return;
+                                                                    setUploadingAttachment(true);
+                                                                    try {
+                                                                        const url = await uploadFile(file);
+                                                                        setPaymentAttachmentUrl(url);
+                                                                        setPaymentAttachmentName(file.name);
+                                                                    } catch (err) {
+                                                                        console.error(err);
+                                                                        alert("Erro ao fazer upload do comprovante.");
+                                                                    } finally {
+                                                                        setUploadingAttachment(false);
+                                                                    }
+                                                                }}
+                                                                disabled={uploadingAttachment}
+                                                            />
+                                                        </label>
+                                                        {paymentAttachmentName ? (
+                                                            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 px-3 py-1.5 rounded-xl">
+                                                                <span className="text-[10px] font-black text-emerald-700 truncate max-w-[250px]">{paymentAttachmentName}</span>
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setPaymentAttachmentUrl('');
+                                                                        setPaymentAttachmentName('');
+                                                                    }}
+                                                                    className="text-emerald-700 hover:text-emerald-900"
+                                                                >
+                                                                    <X size={14} />
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-[10px] font-bold text-slate-400 italic">Nenhum arquivo selecionado (Opcional)</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="flex justify-end mt-4 gap-3">
+                                                <button onClick={() => setShowPaymentForm(false)} className="px-4 py-2 text-xs font-black text-slate-400 uppercase hover:bg-slate-50 rounded-xl transition-all">Cancelar</button>
+                                                <button 
+                                                    disabled={isSaving || paymentAmount <= 0}
+                                                    onClick={handleSavePayment}
+                                                    className="px-8 py-2 bg-green-600 text-white text-xs font-black uppercase rounded-xl hover:bg-green-700 transition-all disabled:opacity-50 flex items-center gap-2"
+                                                >
+                                                    {isSaving ? <Loader2 className="animate-spin" size={14}/> : <Save size={14} />} Confirmar Recebimento (R$ {(paymentAmount + paymentInterest - paymentDiscount - paymentFees).toFixed(2)})
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                                        <table className="w-full text-left">
+                                            <thead className="bg-slate-50 border-b border-slate-100">
+                                                <tr>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Data</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Forma</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Observação</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Comprovante</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Valor</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-50">
+                                                {dentistPayments.filter(p => p.dentistId === statementClient.id && new Date(p.paymentDate) >= new Date(`${filterStartDate}T00:00:00`) && new Date(p.paymentDate) <= new Date(`${filterEndDate}T23:59:59`)).length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum recebimento registrado neste período.</td>
+                                                    </tr>
+                                                ) : (
+                                                    dentistPayments.filter(p => p.dentistId === statementClient.id && new Date(p.paymentDate) >= new Date(`${filterStartDate}T00:00:00`) && new Date(p.paymentDate) <= new Date(`${filterEndDate}T23:59:59`)).map((p, idx) => (
+                                                        <tr 
+                                                            key={p.id} 
+                                                            onClick={() => {
+                                                                setSelectedPaymentForDetail(p);
+                                                                setIsEditingDetailPayment(false);
+                                                                setEditDetailAmount(p.amount);
+                                                                setEditDetailInterest(p.interest || 0);
+                                                                setEditDetailFees(p.fees || 0);
+                                                                setEditDetailDiscount(p.discount || 0);
+                                                                setEditDetailMethod(p.paymentMethod);
+                                                                setEditDetailCardMachineId(p.cardMachineId || '');
+                                                                setEditDetailBankAccountId(p.bankAccountId || '');
+                                                                setEditDetailDate(new Date(p.paymentDate).toISOString().split('T')[0]);
+                                                                setEditDetailNotes(p.notes || '');
+                                                                setEditDetailAttachmentUrl(p.attachmentUrl || '');
+                                                                setEditDetailAttachmentName(p.attachmentName || '');
+                                                            }}
+                                                            className="hover:bg-slate-50 transition-colors cursor-pointer"
+                                                        >
+                                                            <td className="px-6 py-4 text-xs font-bold text-slate-500">
+                                                                {new Date(p.paymentDate).toLocaleDateString('pt-BR')}
+                                                            </td>
+                                                            <td className="px-6 py-4">
+                                                                <span className="px-2 py-1 bg-slate-100 text-slate-600 text-[9px] font-black uppercase rounded-lg">
+                                                                    {p.paymentMethod}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-6 py-4 text-xs font-bold text-slate-600 italic">
+                                                                {p.notes || '-'}
+                                                            </td>
+                                                            <td className="px-6 py-4 text-center">
+                                                                {p.attachmentUrl ? (
+                                                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 border border-emerald-100 text-emerald-700 text-[9px] font-black uppercase rounded-lg">
+                                                                        <FileCheck size={10} /> Sim
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="inline-flex px-2 py-0.5 bg-slate-50 text-slate-400 border border-slate-100 text-[9px] font-mono rounded">Não</span>
+                                                                )}
+                                                            </td>
+                                                            <td className="px-6 py-4 text-xs font-black text-right text-green-600">
+                                                                R$ {p.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSubTab === 'FATURAS' && (
+                                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex justify-between items-center">
+                                        <h4 className="text-sm font-black text-slate-800 uppercase tracking-widest">Faturas & Boletos</h4>
+                                    </div>
+
+                                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                                        <table className="w-full text-left">
+                                            <thead className="bg-slate-50 border-b border-slate-100">
+                                                <tr>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">ID</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Vencimento</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Valor</th>
+                                                    <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Ações</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-50">
+                                                {billingBatches.filter(b => b.dentistId === statementClient.id).length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhuma fatura gerada para este cliente.</td>
+                                                    </tr>
+                                                ) : (
+                                                    billingBatches.filter(b => b.dentistId === statementClient.id).map((b) => (
+                                                        <tr key={b.id} className="hover:bg-slate-50 transition-colors">
+                                                            <td className="px-6 py-4 text-[10px] font-black text-slate-400">#{b.id.slice(-6).toUpperCase()}</td>
+                                                            <td className="px-6 py-4 text-xs font-bold text-slate-600">
+                                                                {new Date(b.dueDate).toLocaleDateString('pt-BR')}
+                                                            </td>
+                                                            <td className="px-6 py-4">
+                                                                <span className={`px-2 py-1 text-[9px] font-black uppercase rounded-lg ${
+                                                                    b.status === 'PAID' ? 'bg-green-100 text-green-700' : 
+                                                                    b.status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                                                                }`}>
+                                                                    {b.status === 'PAID' ? 'Paga' : b.status === 'OVERDUE' ? 'Atrasada' : 'Pendente'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-6 py-4 text-xs font-black text-right text-slate-800">
+                                                                R$ {b.totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                            </td>
+                                                            <td className="px-6 py-4 text-center">
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    {b.status !== 'PAID' && (
+                                                                        <button 
+                                                                            onClick={() => updateBillingBatchStatus(b.id, 'PAID')}
+                                                                            className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-all"
+                                                                            title="Marcar como Pago"
+                                                                        >
+                                                                            <Check size={16} />
+                                                                        </button>
+                                                                    )}
+                                                                    {b.boletoUrl && (
+                                                                        <a href={b.boletoUrl} target="_blank" className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Ver Boleto">
+                                                                            <FileText size={16} />
+                                                                        </a>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* FOOTER */}
+                        <div className="p-6 border-t border-slate-100 bg-white flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-6">
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Saldo Devedor Total</span>
+                                    <span className={`text-xl font-black ${chronoHistory.history.length > 0 && chronoHistory.history[chronoHistory.history.length-1].balanceAfter < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        R$ {Math.abs(chronoHistory.history.length > 0 ? chronoHistory.history[chronoHistory.history.length-1].balanceAfter : chronoHistory.previousBalance).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                    </span>
+                                </div>
+                                <div className="h-10 w-px bg-slate-100 mx-2 hidden md:block" />
+                                <div className="hidden md:flex flex-col">
+                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Último Pagamento</span>
+                                    <span className="text-sm font-bold text-slate-600">
+                                        {chronoHistory.history.filter(i => i.type === 'PAYMENT').pop()?.date ? new Date(chronoHistory.history.filter(i => i.type === 'PAYMENT').pop()!.date).toLocaleDateString('pt-BR') : '--/--/----'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 w-full md:w-auto">
+                                <button 
+                                    onClick={() => {
+                                        const lastBalance = chronoHistory.history.length > 0 ? chronoHistory.history[chronoHistory.history.length - 1].balanceAfter : chronoHistory.previousBalance;
+                                        const defaultAmount = lastBalance < 0 ? Math.abs(lastBalance) : 0;
+                                        setCustomBoletoAmount(defaultAmount);
+                                        setShowBoletoModal(true);
+                                    }}
+                                    className="flex-1 md:flex-none flex items-center justify-center gap-2 px-8 py-3 bg-blue-600 text-white font-black rounded-2xl hover:bg-blue-700 transition-all shadow-xl shadow-blue-100 uppercase text-xs"
+                                >
+                                    <Receipt size={18} /> Fechar Faturamento
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setActiveSubTab('RECEBIMENTOS');
+                                        setShowPaymentForm(true);
+                                    }}
+                                    className="flex-1 md:flex-none flex items-center justify-center gap-2 px-8 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all uppercase text-xs"
+                                >
+                                    <Banknote size={18} /> Pagar Manual
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+      )}
+
+      {showBoletoModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-300">
+                  <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Gerar Boleto de Cobrança</h3>
+                      <button onClick={() => setShowBoletoModal(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                          <X size={20} />
+                      </button>
+                  </div>
+                  <div className="space-y-4">
+                      <div>
+                          <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2">Valor da Cobrança (R$)</label>
+                          <input 
+                              type="number"
+                              step="0.01"
+                              value={customBoletoAmount}
+                              onChange={e => setCustomBoletoAmount(Math.max(0, parseFloat(e.target.value) || 0))}
+                              className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-800"
+                              placeholder="Valor em R$"
+                          />
+                          <span className="block text-[10px] text-slate-400 font-bold mt-1 font-mono">
+                              Saldo devedor atual do cliente: R$ {(() => {
+                                  const lastBalance = chronoHistory.history.length > 0 ? chronoHistory.history[chronoHistory.history.length - 1].balanceAfter : chronoHistory.previousBalance;
+                                  return lastBalance < 0 ? Math.abs(lastBalance).toFixed(2) : '0.00';
+                              })()}
+                          </span>
+                      </div>
+                      <div>
+                          <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2">Data de Vencimento</label>
+                          <input 
+                              type="date"
+                              value={customBoletoDueDate}
+                              onChange={e => setCustomBoletoDueDate(e.target.value)}
+                              className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-800"
+                          />
+                      </div>
+                      <div className="pt-4 flex gap-2">
+                           <button 
+                               onClick={() => setShowBoletoModal(false)}
+                               className="flex-1 py-3 px-4 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-all uppercase text-xs"
+                           >
+                               Cancelar
+                           </button>
+                           <button 
+                               onClick={async () => {
+                                   if (customBoletoAmount <= 0) {
+                                       alert('Por favor, informe um valor maior que zero para o boleto.');
+                                       return;
+                                   }
+                                   if (!customBoletoDueDate) {
+                                       alert('Por favor, informe uma data de vencimento válida.');
+                                       return;
+                                   }
+
+                                   const pendingJobIds = chronoHistory.history
+                                       .filter(item => item.type === 'DEBIT')
+                                       .map(item => item.id);
+
+                                   try {
+                                       await generateBatchBoleto(statementClient.id, pendingJobIds, new Date(customBoletoDueDate), customBoletoAmount);
+                                       alert('Boleto de cobrança gerado com sucesso!');
+                                       setShowBoletoModal(false);
+                                       setActiveSubTab('FATURAS');
+                                   } catch (err: any) {
+                                       console.error(err);
+                                       if (err.message === 'ASAAS_NOT_CONFIGURED') {
+                                           setShowBoletoModal(false);
+                                           setShowAsaasError(true);
+                                       } else {
+                                           alert('Erro ao gerar boleto.');
+                                       }
+                                   }
+                               }}
+                               className="flex-1 py-3 px-4 bg-blue-600 text-white font-black rounded-xl hover:bg-blue-700 transition-all uppercase text-xs"
+                           >
+                               Confirmar
+                           </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+       )}
+
+      {showAsaasError && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-300">
+                  <div className="flex flex-col items-center text-center gap-4">
+                      <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center text-red-500 mb-2">
+                          <AlertTriangle size={40} />
+                      </div>
+                      <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight text-red-600">Erro de Geração de Boleto</h3>
+                      <p className="text-slate-500 font-bold">
+                          Sua conta Asaas não está devidamente criada ou configurada para esta operação.
+                      </p>
+                      <p className="text-slate-400 text-sm">
+                          Verifique as chaves de API e o ID da Carteira nas configurações do seu laboratório.
+                      </p>
+                      <button 
+                          onClick={() => setShowAsaasError(false)}
+                          className="w-full mt-6 py-4 bg-slate-800 text-white font-black uppercase rounded-2xl hover:bg-slate-900 transition-all shadow-xl shadow-slate-200"
+                      >
+                          Entendido
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {selectedPaymentForDetail && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 font-sans">
+              <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-300">
+                  <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+                      <div>
+                          <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                              <FileText size={18} className="text-green-600" />
+                              {isEditingDetailPayment ? 'Editar Recebimento' : 'Detalhes do Recebimento'}
+                          </h3>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Dentista: {selectedPaymentForDetail.dentistName}</p>
+                      </div>
+                      <button 
+                          onClick={() => {
+                              setSelectedPaymentForDetail(null);
+                              setIsEditingDetailPayment(false);
+                          }} 
+                          className="text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                          <X size={24}/>
+                      </button>
+                  </div>
+
+                  <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+                      {isEditingDetailPayment ? (
+                          /* EDIT MODE FORM */
+                          <div className="space-y-4">
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                  <div>
+                                      <label className="block text-[10px] font-black text-slate-500 uppercase mb-1 tracking-widest">Valor Recebido (R$)</label>
+                                      <input 
+                                          type="number"
+                                          value={editDetailAmount}
+                                          onChange={e => setEditDetailAmount(parseFloat(e.target.value) || 0)}
+                                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-black text-slate-700 text-xs"
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="block text-[10px] font-black text-red-500 uppercase mb-1 tracking-widest">Juros/Mora (+)</label>
+                                      <input 
+                                          type="number"
+                                          value={editDetailInterest}
+                                          onChange={e => setEditDetailInterest(parseFloat(e.target.value) || 0)}
+                                          className="w-full px-4 py-2.5 bg-red-50/50 border border-red-100 rounded-xl focus:ring-2 focus:ring-red-500 outline-none font-bold text-red-700 text-xs"
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="block text-[10px] font-black text-green-600 uppercase mb-1 tracking-widest">Desconto (-)</label>
+                                      <input 
+                                          type="number"
+                                          value={editDetailDiscount}
+                                          onChange={e => setEditDetailDiscount(parseFloat(e.target.value) || 0)}
+                                          className="w-full px-4 py-2.5 bg-green-50/50 border border-green-100 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-green-700 text-xs"
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="block text-[10px] font-black text-orange-600 uppercase mb-1 tracking-widest">Taxas (-)</label>
+                                      <input 
+                                          type="number"
+                                          value={editDetailFees}
+                                          onChange={e => setEditDetailFees(parseFloat(e.target.value) || 0)}
+                                          className="w-full px-4 py-2.5 bg-orange-50/50 border border-orange-100 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none font-bold text-orange-700 text-xs"
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="block text-[10px] font-black text-slate-500 uppercase mb-1 tracking-widest">Forma</label>
+                                      <select 
+                                          value={editDetailMethod}
+                                          onChange={e => setEditDetailMethod(e.target.value as any)}
+                                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-slate-700 h-[38px] text-xs font-sans"
+                                      >
+                                          <option value="PIX">PIX</option>
+                                          <option value="CASH">Dinheiro</option>
+                                          <option value="CREDIT_CARD">Cartão de Crédito</option>
+                                          <option value="DEBIT_CARD">Cartão de Débito</option>
+                                          <option value="BANK_TRANSFER">Transferência Bancária</option>
+                                          <option value="BOLETO">Boleto (Pago)</option>
+                                          <option value="DISCOUNT">Desconto/Cortesia</option>
+                                      </select>
+                                  </div>
+                                  <div>
+                                      <label className="block text-[10px] font-black text-slate-500 uppercase mb-1 tracking-widest">Data Lanc.</label>
+                                      <input 
+                                          type="date"
+                                          value={editDetailDate}
+                                          onChange={e => setEditDetailDate(e.target.value)}
+                                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-slate-700 text-xs h-[38px]"
+                                      />
+                                  </div>
+
+                                  {(editDetailMethod === 'CREDIT_CARD' || editDetailMethod === 'DEBIT_CARD') && (
+                                      <div className="animate-in slide-in-from-top-2">
+                                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Máquina</label>
+                                          <select 
+                                              value={editDetailCardMachineId}
+                                              onChange={e => setEditDetailCardMachineId(e.target.value)}
+                                              className="w-full px-4 py-2.5 bg-blue-50 border border-blue-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-700 text-xs h-[38px]"
+                                          >
+                                              <option value="">Selecione...</option>
+                                              {cardMachines.map(m => (
+                                                  <option key={m.id} value={m.id}>{m.name}</option>
+                                              ))}
+                                          </select>
+                                      </div>
+                                  )}
+
+                                  {editDetailMethod === 'BANK_TRANSFER' && (
+                                      <div className="animate-in slide-in-from-top-2">
+                                          <label className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Conta</label>
+                                          <select 
+                                              value={editDetailBankAccountId}
+                                              onChange={e => setEditDetailBankAccountId(e.target.value)}
+                                              className="w-full px-4 py-2.5 bg-blue-50 border border-blue-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-700 text-xs h-[38px]"
+                                          >
+                                              <option value="">Selecione...</option>
+                                              {bankAccounts.map(b => (
+                                                  <option key={b.id} value={b.id}>{b.name}</option>
+                                              ))}
+                                          </select>
+                                      </div>
+                                  )}
+
+                                  <div className="md:col-span-1">
+                                      <label className="block text-[10px] font-black text-slate-500 uppercase mb-1 tracking-widest italic">Total Líquido</label>
+                                      <div className="w-full px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-xl font-black text-slate-800 text-xs h-[38px] flex items-center">
+                                          R$ {(editDetailAmount + editDetailInterest - editDetailDiscount - editDetailFees).toFixed(2)}
+                                      </div>
+                                  </div>
+                              </div>
+
+                              <div>
+                                  <label className="block text-[10px] font-black text-slate-500 uppercase mb-1 tracking-widest">Observações/Ref.</label>
+                                  <input 
+                                      value={editDetailNotes}
+                                      onChange={e => setEditDetailNotes(e.target.value)}
+                                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none font-bold text-slate-700 text-xs"
+                                      placeholder="Ex: Ref. OS 123..."
+                                  />
+                              </div>
+
+                              <div className="border-t border-slate-100 pt-4">
+                                  <label className="block text-[10px] font-black text-slate-500 uppercase mb-1.5 tracking-widest flex items-center gap-1.5">
+                                      <FileText size={12} /> Comprovante de Recebimento
+                                  </label>
+                                  <div className="flex items-center gap-3">
+                                      <label className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-black uppercase rounded-xl transition-all border border-slate-200">
+                                          {uploadingEditAttachment ? (
+                                              <>
+                                                  <Loader2 className="animate-spin" size={14} />
+                                                  Enviando...
+                                              </>
+                                          ) : (
+                                              <>
+                                                  <Plus size={14} /> Selecionar Comprovante
+                                              </>
+                                          )}
+                                          <input 
+                                              type="file" 
+                                              accept="image/*,application/pdf"
+                                              className="hidden" 
+                                              onChange={async (e) => {
+                                                  const file = e.target.files?.[0];
+                                                  if (!file) return;
+                                                  setUploadingEditAttachment(true);
+                                                  try {
+                                                      const url = await uploadFile(file);
+                                                      setEditDetailAttachmentUrl(url);
+                                                      setEditDetailAttachmentName(file.name);
+                                                  } catch (err) {
+                                                      console.error(err);
+                                                      alert("Erro ao fazer upload do comprovante.");
+                                                  } finally {
+                                                      setUploadingEditAttachment(false);
+                                                  }
+                                              }}
+                                              disabled={uploadingEditAttachment}
+                                          />
+                                      </label>
+                                      {editDetailAttachmentName ? (
+                                          <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 px-3 py-1.5 rounded-xl">
+                                              <span className="text-[10px] font-black text-emerald-700 truncate max-w-[200px]">{editDetailAttachmentName}</span>
+                                              <button 
+                                                  type="button"
+                                                  onClick={() => {
+                                                      setEditDetailAttachmentUrl('');
+                                                      setEditDetailAttachmentName('');
+                                                  }}
+                                                  className="text-emerald-700 hover:text-emerald-950"
+                                              >
+                                                  <X size={14} />
+                                              </button>
+                                          </div>
+                                      ) : (
+                                          <span className="text-[10px] font-bold text-slate-400 italic">Nenhum arquivo anexado</span>
+                                      )}
+                                  </div>
+                              </div>
+
+                              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                                  <button 
+                                      type="button" 
+                                      onClick={() => setIsEditingDetailPayment(false)}
+                                      className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 transition-all uppercase text-xs animate-in duration-100"
+                                  >
+                                      Cancelar
+                                  </button>
+                                  <button 
+                                      type="button"
+                                      disabled={isSaving || editDetailAmount <= 0}
+                                      onClick={async () => {
+                                          if (!selectedPaymentForDetail) return;
+                                          setIsSaving(true);
+                                          try {
+                                              const updates = {
+                                                  amount: editDetailAmount,
+                                                  interest: editDetailInterest,
+                                                  fees: editDetailFees,
+                                                  discount: editDetailDiscount,
+                                                  paymentMethod: editDetailMethod,
+                                                  cardMachineId: (editDetailMethod === 'CREDIT_CARD' || editDetailMethod === 'DEBIT_CARD') ? editDetailCardMachineId : undefined,
+                                                  bankAccountId: editDetailMethod === 'BANK_TRANSFER' ? editDetailBankAccountId : undefined,
+                                                  paymentDate: new Date(`${editDetailDate}T12:00:00`),
+                                                  notes: editDetailNotes,
+                                                  attachmentUrl: editDetailAttachmentUrl || undefined,
+                                                  attachmentName: editDetailAttachmentName || undefined
+                                              };
+                                              await updateDentistPayment(selectedPaymentForDetail.id, updates);
+                                              setSelectedPaymentForDetail({ ...selectedPaymentForDetail, ...updates });
+                                              setIsEditingDetailPayment(false);
+                                              alert("Lançamento de recebimento atualizado com sucesso!");
+                                          } catch (err) {
+                                              console.error(err);
+                                              alert("Erro ao atualizar o recebimento.");
+                                          } finally {
+                                              setIsSaving(false);
+                                          }
+                                      }}
+                                      className="flex-1 py-3 bg-green-600 text-white font-black rounded-xl hover:bg-green-700 transition-all uppercase text-xs flex items-center justify-center gap-2"
+                                  >
+                                      {isSaving ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                                      Salvar Alterações
+                                  </button>
+                              </div>
+                          </div>
+                      ) : (
+                          /* READ ONLY VIEW MODE */
+                          <div className="space-y-6">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Valor Recebido</p>
+                                      <p className="text-sm font-black text-slate-800">R$ {selectedPaymentForDetail.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-red-500">Juros/Mora (+)</p>
+                                      <p className="text-sm font-black text-red-600">R$ {(selectedPaymentForDetail.interest || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-green-600">Desconto (-)</p>
+                                      <p className="text-sm font-black text-green-600">R$ {(selectedPaymentForDetail.discount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-orange-600">Taxas (-)</p>
+                                      <p className="text-sm font-black text-orange-600">R$ {(selectedPaymentForDetail.fees || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Forma de Pagamento</p>
+                                      <span className="inline-block mt-0.5 px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black uppercase rounded">
+                                          {selectedPaymentForDetail.paymentMethod}
+                                      </span>
+                                  </div>
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Data do Lançamento</p>
+                                      <p className="text-xs font-bold text-slate-700">{new Date(selectedPaymentForDetail.paymentDate).toLocaleDateString('pt-BR')}</p>
+                                  </div>
+                              </div>
+
+                              {selectedPaymentForDetail.notes && (
+                                  <div>
+                                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Observações/Referência</p>
+                                      <p className="text-xs font-medium text-slate-600 bg-slate-50/50 p-3 rounded-xl border border-slate-100 mt-1 italic">
+                                          "{selectedPaymentForDetail.notes}"
+                                      </p>
+                                  </div>
+                              )}
+
+                              {/* COMPROVANTE ATTACHMENT AREA */}
+                              <div className="border-t border-slate-100 pt-6">
+                                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                                      <FileText size={14} className="text-blue-600" />
+                                      Comprovante de Recebimento
+                                  </h4>
+
+                                  {selectedPaymentForDetail.attachmentUrl ? (
+                                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-emerald-50/60 border border-emerald-100 rounded-2xl">
+                                          <div className="flex items-center gap-3">
+                                              <div className="p-3 bg-emerald-100 text-emerald-700 rounded-xl">
+                                                  <FileText size={20} />
+                                              </div>
+                                              <div className="min-w-0">
+                                                  <p className="text-xs font-black text-emerald-800 truncate max-w-[280px]">
+                                                      {selectedPaymentForDetail.attachmentName || "comprovante.pdf"}
+                                                  </p>
+                                                  <p className="text-[10px] text-emerald-600 font-bold">Comprovante anexado</p>
+                                              </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                              <a 
+                                                  href={selectedPaymentForDetail.attachmentUrl} 
+                                                  target="_blank" 
+                                                  rel="noreferrer"
+                                                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase rounded-xl transition-all flex items-center gap-1.5 shadow-sm"
+                                              >
+                                                  <ExternalLink size={12} /> Visualizar
+                                              </a>
+                                              <button 
+                                                  onClick={async () => {
+                                                      if (!confirm("Deseja realmente remover o comprovante anexado?")) return;
+                                                      setIsSaving(true);
+                                                      try {
+                                                          await updateDentistPayment(selectedPaymentForDetail.id, {
+                                                              attachmentUrl: undefined,
+                                                              attachmentName: undefined
+                                                          });
+                                                          setSelectedPaymentForDetail({
+                                                              ...selectedPaymentForDetail,
+                                                              attachmentUrl: undefined,
+                                                              attachmentName: undefined
+                                                          });
+                                                          alert("Comprovante removido com sucesso!");
+                                                      } catch (err) {
+                                                          console.error(err);
+                                                          alert("Erro ao remover comprovante.");
+                                                      } finally {
+                                                          setIsSaving(false);
+                                                      }
+                                                  }}
+                                                  className="px-3 py-2 bg-slate-100 hover:bg-red-50 hover:text-red-600 text-slate-500 text-[10px] font-black uppercase rounded-xl transition-all"
+                                              >
+                                                  Remover
+                                              </button>
+                                          </div>
+                                      </div>
+                                  ) : (
+                                      <div className="flex flex-col items-center justify-center p-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl text-center">
+                                          <FileText size={32} className="text-slate-300 mb-2" />
+                                          <p className="text-xs font-bold text-slate-500">Nenhum comprovante anexado neste recebimento</p>
+                                          <p className="text-[10px] text-slate-400 mt-1 mb-4">Selecione ou clique abaixo para anexar um documento agora.</p>
+
+                                          <label className="cursor-pointer flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase rounded-xl transition-all shadow-md shadow-blue-100">
+                                              {uploadingAttachment ? (
+                                                  <>
+                                                      <Loader2 className="animate-spin" size={12} />
+                                                      Anexando arquivo...
+                                                  </>
+                                              ) : (
+                                                  <>
+                                                      <Plus size={12} /> Anexar Comprovante
+                                                  </>
+                                              )}
+                                              <input 
+                                                  type="file" 
+                                                  accept="image/*,application/pdf"
+                                                  className="hidden" 
+                                                  disabled={uploadingAttachment}
+                                                  onChange={async (e) => {
+                                                      const file = e.target.files?.[0];
+                                                      if (!file) return;
+                                                      setUploadingAttachment(true);
+                                                      try {
+                                                          const url = await uploadFile(file);
+                                                          await updateDentistPayment(selectedPaymentForDetail.id, {
+                                                              attachmentUrl: url,
+                                                              attachmentName: file.name
+                                                          });
+                                                          setSelectedPaymentForDetail({
+                                                              ...selectedPaymentForDetail,
+                                                              attachmentUrl: url,
+                                                              attachmentName: file.name
+                                                          });
+                                                          alert("Comprovante anexado!");
+                                                      } catch (err) {
+                                                          console.error(err);
+                                                          alert("Erro ao fazer upload do comprovante.");
+                                                      } finally {
+                                                          setUploadingAttachment(false);
+                                                      }
+                                                  }}
+                                              />
+                                          </label>
+                                      </div>
+                                  )}
+                              </div>
+
+                              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                                  <button 
+                                      type="button" 
+                                      onClick={() => {
+                                          setSelectedPaymentForDetail(null);
+                                          setIsEditingDetailPayment(false);
+                                      }}
+                                      className="flex-1 py-3 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 transition-all uppercase text-xs"
+                                  >
+                                      Fechar
+                                  </button>
+                                  <button 
+                                      type="button"
+                                      onClick={() => {
+                                          setIsEditingDetailPayment(true);
+                                      }}
+                                      className="flex-1 py-3 bg-blue-600 text-white font-black rounded-xl hover:bg-blue-700 transition-all uppercase text-xs flex items-center justify-center gap-2"
+                                  >
+                                      <Plus size={14} /> Editar Lançamento
+                                  </button>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+    </div>
+  );
+};
