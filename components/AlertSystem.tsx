@@ -1,0 +1,318 @@
+
+import React, { useState, useEffect } from 'react';
+import { useApp } from '../context/AppContext';
+import { Job, JobAlert, UserRole } from '../types';
+import { AlertOctagon, Bell, Calendar, Clock, MapPin, Send, User, X } from 'lucide-react';
+import { getContrastColor } from '../services/mockData';
+
+interface CreateAlertModalProps {
+    job: Job;
+    onClose: () => void;
+}
+
+export const CreateAlertModal: React.FC<CreateAlertModalProps> = ({ job, onClose }) => {
+    const { addAlert, allUsers, sectors, currentUser } = useApp();
+    const [message, setMessage] = useState('');
+    const [targetType, setTargetType] = useState<'SECTOR' | 'USER'>('SECTOR');
+    const [selectedSector, setSelectedSector] = useState(job.currentSector || '');
+    const [selectedUserId, setSelectedUserId] = useState('');
+    
+    const [scheduledDate, setScheduledDate] = useState(new Date().toISOString().split('T')[0]);
+    const [scheduledTime, setScheduledTime] = useState(new Date().toTimeString().split(' ')[0].substring(0, 5));
+    const [isRecurring, setIsRecurring] = useState(false);
+    const [repeatInterval, setRepeatInterval] = useState(15);
+    const [repeatCount, setRepeatCount] = useState(3);
+
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!currentUser) return;
+
+        // Combine date and time
+        const scheduledFor = new Date(`${scheduledDate}T${scheduledTime}`);
+
+        
+        const newAlert: JobAlert = {
+            id: Math.random().toString(36).substr(2, 9),
+            organizationId: currentUser.organizationId || 'mock-org',
+            jobId: job.id,
+            osNumber: job.osNumber || 'N/A',
+            message: message || `Atenção ao trabalho OS ${job.osNumber}`,
+            targetSector: targetType === 'SECTOR' ? selectedSector : undefined,
+            targetUserId: targetType === 'USER' ? selectedUserId : undefined,
+            scheduledFor: scheduledFor,
+            createdBy: currentUser.name,
+            createdAt: new Date(),
+            readBy: [],
+            repeatInterval: isRecurring ? repeatInterval : undefined,
+            repeatCount: isRecurring ? repeatCount : undefined,
+            repeatedCount: isRecurring ? 0 : undefined
+        };
+
+
+        addAlert(newAlert);
+        onClose();
+        alert("Alarme criado com sucesso!");
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md animate-in zoom-in duration-200 overflow-hidden">
+                <div className="bg-red-50 p-4 border-b border-red-100 flex justify-between items-center">
+                    <h3 className="text-lg font-bold text-red-800 flex items-center gap-2">
+                        <Bell size={20} /> Criar Alerta de Urgência
+                    </h3>
+                    <button onClick={onClose} className="text-red-300 hover:text-red-500"><X size={20}/></button>
+                </div>
+                
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                    <div>
+                        <label className="block text-sm font-bold text-slate-700 mb-1">Mensagem</label>
+                        <textarea 
+                            required
+                            value={message}
+                            onChange={e => setMessage(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none"
+                            placeholder="Ex: Entregar até 14h sem falta!"
+                            rows={2}
+                        />
+                    </div>
+
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                         <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Data</label>
+                            <input 
+                                type="date"
+                                required
+                                value={scheduledDate}
+                                onChange={e => setScheduledDate(e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                            />
+                         </div>
+                         <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Hora</label>
+                            <input 
+                                type="time"
+                                required
+                                value={scheduledTime}
+                                onChange={e => setScheduledTime(e.target.value)}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                            />
+                         </div>
+                    </div>
+
+                    <div className="space-y-3 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                        <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                checked={isRecurring}
+                                onChange={e => setIsRecurring(e.target.checked)}
+                                className="w-4 h-4 text-red-600 rounded"
+                            />
+                            Repetir este Alarme
+                        </label>
+                        
+                        {isRecurring && (
+                            <div className="grid grid-cols-2 gap-4 pt-2">
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1">Intervalo (Minutos)</label>
+                                    <input 
+                                        type="number"
+                                        min="1"
+                                        required={isRecurring}
+                                        value={repeatInterval}
+                                        onChange={e => setRepeatInterval(Number(e.target.value))}
+                                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1">Quantas Vezes?</label>
+                                    <input 
+                                        type="number"
+                                        min="1"
+                                        required={isRecurring}
+                                        value={repeatCount}
+                                        onChange={e => setRepeatCount(Number(e.target.value))}
+                                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm"
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+
+                    <div>
+                        <label className="block text-sm font-bold text-slate-700 mb-2">Destinatário</label>
+                        <div className="flex bg-slate-100 p-1 rounded-lg mb-3">
+                            <button
+                                type="button"
+                                onClick={() => setTargetType('SECTOR')}
+                                className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${targetType === 'SECTOR' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}
+                            >
+                                Setor
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setTargetType('USER')}
+                                className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${targetType === 'USER' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}
+                            >
+                                Colaborador
+                            </button>
+                        </div>
+
+                        {targetType === 'SECTOR' ? (
+                            <div className="relative">
+                                <MapPin size={16} className="absolute left-3 top-3 text-slate-400" />
+                                <select
+                                    value={selectedSector}
+                                    onChange={e => setSelectedSector(e.target.value)}
+                                    className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg bg-white"
+                                >
+                                    <option value="">Selecione um Setor...</option>
+                                    {sectors.map(s => (
+                                        <option key={s.id} value={s.name}>{s.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        ) : (
+                             <div className="relative">
+                                <User size={16} className="absolute left-3 top-3 text-slate-400" />
+                                <select
+                                    value={selectedUserId}
+                                    onChange={e => setSelectedUserId(e.target.value)}
+                                    className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg bg-white"
+                                >
+                                    <option value="">Selecione um Usuário...</option>
+                                    {allUsers.filter(u => u.role !== UserRole.CLIENT).map(u => (
+                                        <option key={u.id} value={u.id}>{u.name} ({u.sector || 'Geral'})</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                    </div>
+
+                    <button 
+                        type="submit"
+                        className="w-full py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 flex items-center justify-center gap-2 mt-2 shadow-lg shadow-red-200"
+                    >
+                        <Send size={18} /> Agendar Alarme
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+export const AlertPopup = () => {
+    const { activeAlert, dismissAlert, jobs } = useApp();
+
+    useEffect(() => {
+        if (!activeAlert) return;
+
+        // Tenta disparar notificação push
+        if ("Notification" in window) {
+            if (Notification.permission === "granted") {
+                new Notification("LABPROX: Alerta de Urgência", {
+                    body: activeAlert.message,
+                    icon: '/logo labprox.svg'
+                });
+            } else if (Notification.permission !== "denied") {
+                Notification.requestPermission().then(permission => {
+                    if (permission === "granted") {
+                        new Notification("LABPROX: Alerta de Urgência", {
+                            body: activeAlert.message,
+                            icon: '/logo labprox.svg'
+                        });
+                    }
+                });
+            }
+        }
+
+        const playSound = () => {
+            try {
+                const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                
+                const playBeep = (time: number, freq: number, duration: number, vol: number = 0.2) => {
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    
+                    oscillator.type = 'square';
+                    oscillator.frequency.setValueAtTime(freq, time);
+                    
+                    gainNode.gain.setValueAtTime(vol, time);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, time + duration);
+                    
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    
+                    oscillator.start(time);
+                    oscillator.stop(time + duration);
+                };
+                
+                const now = audioCtx.currentTime;
+                playBeep(now, 800, 0.2);
+                playBeep(now + 0.25, 800, 0.2);
+                playBeep(now + 0.5, 1000, 0.4);
+            } catch (e) {
+                console.error("Audio playback failed", e);
+            }
+        };
+
+        playSound();
+        const soundInterval = setInterval(playSound, 2 * 60 * 1000); // Repete a cada 2 minutos
+
+        return () => clearInterval(soundInterval);
+    }, [activeAlert]);
+
+    if (!activeAlert) return null;
+
+    // Find full job details for the box info
+    const job = jobs.find(j => j.id === activeAlert.jobId);
+
+    return (
+        <div className="fixed top-0 left-0 right-0 z-[200] flex justify-center p-4 animate-in slide-in-from-top-4 duration-300 print:hidden">
+            <div className="bg-red-600 text-white rounded-2xl shadow-2xl p-6 max-w-md w-full border-4 border-red-400/50 flex flex-col gap-4">
+                <div className="flex items-start gap-4">
+                    <div className="bg-white/20 p-3 rounded-full shrink-0 animate-pulse">
+                        <AlertOctagon size={32} />
+                    </div>
+                    <div className="flex-1">
+                        <div className="flex justify-between items-start">
+                             <div>
+                                <h4 className="font-bold text-lg uppercase tracking-wider mb-1">Alerta de Urgência</h4>
+                                <p className="text-red-100 text-sm mb-2">
+                                    OS: <span className="font-mono font-bold">{activeAlert.osNumber}</span> • Enviado por: {activeAlert.createdBy}
+                                </p>
+                             </div>
+                             
+                             {/* Box Info in Alert */}
+                             {job && job.boxNumber && (
+                                <div 
+                                    className="w-12 h-12 rounded-lg flex items-center justify-center font-bold text-xl shadow-lg border-2 border-white/20"
+                                    style={{ 
+                                        backgroundColor: job.boxColor?.hex || '#ccc',
+                                        color: getContrastColor(job.boxColor?.hex || '#ccc')
+                                    }}
+                                >
+                                    {job.boxNumber}
+                                </div>
+                             )}
+                        </div>
+
+                        <div className="bg-black/10 p-3 rounded-lg border border-white/10 text-lg font-bold">
+                            "{activeAlert.message}"
+                        </div>
+                    </div>
+                </div>
+                
+                <button 
+                    onClick={() => dismissAlert(activeAlert.id)}
+                    className="w-full py-3 bg-white text-red-700 font-bold rounded-xl hover:bg-red-50 transition-colors shadow-lg"
+                >
+                    CIENTE, VOU RESOLVER
+                </button>
+            </div>
+        </div>
+    );
+};
