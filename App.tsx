@@ -1,0 +1,236 @@
+
+import React from 'react';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { NFCReader } from "./pages/NFCReader";
+import { AppProvider, useApp } from './context/AppContext';
+import { Layout } from './components/Layout';
+import { Login } from './pages/Login';
+import { LandingPage } from './pages/LandingPage';
+import { Dashboard } from './pages/Dashboard';
+import { JobsList } from './pages/JobsList';
+import { Catalog } from './pages/store/Catalog';
+import { UnifiedStore } from './pages/store/UnifiedStore';
+import { Cart } from './pages/store/Cart';
+import { IncomingOrders } from './pages/IncomingOrders';
+import { NewJob } from './pages/NewJob';
+import { JobTypes } from './pages/JobTypes';
+import { JobDetails } from './pages/JobDetails';
+import { Commissions } from './pages/Commissions';
+import { Profile } from './pages/Profile';
+import { ProductionCalendar } from './pages/ProductionCalendar';
+import { PromisedJobs } from './pages/PromisedJobs';
+import { Subscribe } from './pages/Subscribe';
+import { RegisterOrganization } from './pages/RegisterOrganization';
+import { Patients } from './pages/clinic/Patients';
+import { Schedule } from './pages/clinic/Schedule';
+import { ClinicServices } from './pages/clinic/ClinicServices';
+import { RoomsManagement } from './pages/clinic/RoomsManagement';
+import { DentistsManagement } from './pages/clinic/DentistsManagement';
+import { ClinicFinance } from './pages/clinic/ClinicFinance';
+import { ClinicSettings } from './pages/clinic/ClinicSettings';
+import { ClinicInventory } from './pages/clinic/ClinicInventory';
+import { Partnerships } from './pages/dentist/Partnerships';
+import { Dentists } from './pages/lab/Dentists';
+import { Finance } from './pages/lab/Finance';
+import { Receipts } from './pages/lab/Receipts';
+import { RoutePlanner } from './pages/lab/RoutePlanner';
+import { Inventory } from './pages/lab/Inventory';
+import { PriceTables } from './pages/lab/PriceTables';
+import { IncomingRequisitions } from './pages/lab/IncomingRequisitions';
+import { DentistRequisitions } from './pages/dentist/DentistRequisitions';
+import { DentistCases } from './pages/dentist/DentistCases';
+import { SuperAdminDashboard } from './pages/superadmin/Dashboard';
+import { Plans } from './pages/superadmin/Plans';
+import { Coupons } from './pages/superadmin/Coupons';
+import { NfcKitsAdmin } from './pages/superadmin/NfcKitsAdmin';
+import Subscriptions from './pages/superadmin/Subscriptions';
+import SuperAdminFinance from './pages/superadmin/Finance';
+import { Tutorials } from './pages/superadmin/Tutorials';
+import { HelpdeskAgentsAdmin } from './pages/superadmin/HelpdeskAgentsAdmin';
+import { MarketplaceCategoriesAdmin } from './pages/superadmin/MarketplaceCategoriesAdmin';
+import { WhatsAppTemplates } from './pages/superadmin/WhatsAppTemplates';
+import { TutorialsView } from './pages/TutorialsView';
+import { HelpdeskWorkspace } from './pages/HelpdeskWorkspace';
+import { TermsOfUse } from './pages/TermsOfUse';
+import { PrivacyPolicy } from './pages/PrivacyPolicy';
+import { RequisitionInvite } from './pages/RequisitionInvite';
+import { SupplierDashboard } from './pages/supplier/Dashboard';
+import { SupplierProducts } from './pages/supplier/Products';
+import { SupplierCoupons } from './pages/supplier/Coupons';
+import { SupplierSettings } from './pages/supplier/Settings';
+import { SupplierStore } from './pages/store/SupplierStore';
+import { Loader2 } from 'lucide-react';
+
+import { AdminLayout } from './pages/admin/AdminLayout';
+import { SectorsTab } from './pages/admin/SectorsTab';
+import { UsersTab } from './pages/admin/UsersTab';
+import { DentistsTab } from './pages/admin/DentistsTab';
+import { CommissionsTab } from './pages/admin/CommissionsTab';
+import { FinancialTab } from './pages/admin/FinancialTab';
+import { SubscriptionTab } from './pages/admin/SubscriptionTab';
+import { OrganizationTab } from './pages/admin/OrganizationTab';
+import { BoxColorsTab } from './pages/admin/BoxColorsTab';
+import { CouponsTab } from './pages/admin/CouponsTab';
+import { TermsPopup } from './components/TermsPopup';
+
+const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
+  const { currentUser, isLoadingAuth, currentOrg, currentPlan } = useApp();
+  const location = useLocation();
+  if (isLoadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><Loader2 className="h-12 w-12 text-blue-600 animate-spin" /></div>;
+  if (!currentUser) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`} replace />;
+
+  const isFreeLab = currentOrg?.orgType === 'LAB' && (currentOrg?.planId === 'free_lab' || currentPlan?.id === 'free_lab' || currentPlan?.features?.isLabFreeStoreOnly === true);
+  if (isFreeLab) {
+    const forbiddenPaths = [
+      '/dashboard',
+      '/lab/receipts',
+      '/commissions',
+      '/incoming-requisitions',
+      '/lab/dentists',
+      '/lab/inventory',
+      '/new-job',
+      '/promised',
+      '/reports',
+      '/admin/comissoes',
+      '/admin/clientes',
+      '/calendar',
+      '/lab/price-tables'
+    ];
+    if (forbiddenPaths.includes(location.pathname)) {
+      return <Navigate to="/lab/finance" replace />;
+    }
+  }
+
+  return (
+    <>
+      <TermsPopup />
+      <Layout>{children}</Layout>
+    </>
+  );
+};
+
+const StoreCatalogRoute = () => {
+  const { currentUser, isLoadingAuth } = useApp();
+
+  if (isLoadingAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="h-12 w-12 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
+
+  if (currentUser) {
+    return (
+      <ProtectedRoute>
+        <UnifiedStore />
+      </ProtectedRoute>
+    );
+  }
+
+  return (
+    <Layout>
+      <Catalog />
+    </Layout>
+  );
+};
+
+import Reports from './pages/Reports';
+
+const AppContent = () => {
+  return (
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/register-lab" element={<RegisterOrganization />} />
+      <Route path="/terms" element={<TermsOfUse />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
+      <Route path="/requisition-invite" element={<RequisitionInvite />} />
+      
+      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/new-job" element={<ProtectedRoute><NewJob /></ProtectedRoute>} />
+      <Route path="/jobs" element={<ProtectedRoute><JobsList /></ProtectedRoute>} />
+      <Route path="/jobs/:id" element={<ProtectedRoute><JobDetails /></ProtectedRoute>} />
+      <Route path="/nfc" element={<ProtectedRoute><NFCReader /></ProtectedRoute>} />
+      <Route path="/commissions" element={<ProtectedRoute><Commissions /></ProtectedRoute>} />
+       <Route path="/incoming-orders" element={<ProtectedRoute><IncomingOrders /></ProtectedRoute>} />
+      <Route path="/incoming-requisitions" element={<ProtectedRoute><IncomingRequisitions /></ProtectedRoute>} />
+      <Route path="/job-types" element={<ProtectedRoute><JobTypes /></ProtectedRoute>} />
+      <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+      
+      <Route path="/admin" element={<ProtectedRoute><AdminLayout /></ProtectedRoute>}>
+        <Route index element={<Navigate to="organizacao" replace />} />
+        <Route path="organizacao" element={<OrganizationTab />} />
+        <Route path="setores" element={<SectorsTab />} />
+        <Route path="caixas" element={<BoxColorsTab />} />
+        <Route path="equipe" element={<UsersTab />} />
+        <Route path="clientes" element={<DentistsTab />} />
+        <Route path="comissoes" element={<CommissionsTab />} />
+        <Route path="pagamentos" element={<FinancialTab />} />
+        <Route path="assinatura" element={<SubscriptionTab />} />
+        <Route path="cupons" element={<CouponsTab />} />
+      </Route>
+
+      <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+      
+      <Route path="/lab/dentists" element={<ProtectedRoute><Dentists /></ProtectedRoute>} />
+      <Route path="/lab/finance" element={<ProtectedRoute><Finance /></ProtectedRoute>} />
+      <Route path="/lab/receipts" element={<ProtectedRoute><Receipts /></ProtectedRoute>} />
+      <Route path="/lab/logistics" element={<ProtectedRoute><RoutePlanner /></ProtectedRoute>} />
+      <Route path="/lab/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
+      <Route path="/lab/price-tables" element={<ProtectedRoute><PriceTables /></ProtectedRoute>} />
+
+      <Route path="/store" element={<ProtectedRoute><UnifiedStore /></ProtectedRoute>} />
+      <Route path="/store/:slug" element={<StoreCatalogRoute />} />
+      <Route path="/cart" element={<ProtectedRoute><Cart /></ProtectedRoute>} />
+      <Route path="/patients" element={<ProtectedRoute><Patients /></ProtectedRoute>} />
+      <Route path="/schedule" element={<ProtectedRoute><Schedule /></ProtectedRoute>} />
+      <Route path="/clinic/services" element={<ProtectedRoute><ClinicServices /></ProtectedRoute>} />
+      <Route path="/clinic/rooms" element={<ProtectedRoute><RoomsManagement /></ProtectedRoute>} />
+      <Route path="/clinic/dentists" element={<ProtectedRoute><DentistsManagement /></ProtectedRoute>} />
+      <Route path="/clinic/finance" element={<ProtectedRoute><ClinicFinance /></ProtectedRoute>} />
+      <Route path="/clinic/inventory" element={<ProtectedRoute><ClinicInventory /></ProtectedRoute>} />
+      <Route path="/clinic-settings" element={<ProtectedRoute><ClinicSettings /></ProtectedRoute>} />
+      <Route path="/dentist/partnerships" element={<ProtectedRoute><Partnerships /></ProtectedRoute>} />
+      <Route path="/requisitions" element={<ProtectedRoute><DentistRequisitions /></ProtectedRoute>} />
+      <Route path="/dentist/cases" element={<ProtectedRoute><DentistCases /></ProtectedRoute>} />
+      <Route path="/my-cases" element={<ProtectedRoute><DentistCases /></ProtectedRoute>} />
+
+      <Route path="/supplier/dashboard" element={<ProtectedRoute><SupplierDashboard /></ProtectedRoute>} />
+      <Route path="/supplier/products" element={<ProtectedRoute><SupplierProducts /></ProtectedRoute>} />
+      <Route path="/supplier/coupons" element={<ProtectedRoute><SupplierCoupons /></ProtectedRoute>} />
+      <Route path="/supplier/settings" element={<ProtectedRoute><SupplierSettings /></ProtectedRoute>} />
+
+      <Route path="/calendar" element={<ProtectedRoute><ProductionCalendar /></ProtectedRoute>} />
+      <Route path="/promised" element={<ProtectedRoute><PromisedJobs /></ProtectedRoute>} />
+      <Route path="/subscribe" element={<ProtectedRoute><Subscribe /></ProtectedRoute>} />
+      <Route path="/tutorials" element={<ProtectedRoute><TutorialsView /></ProtectedRoute>} />
+
+      <Route path="/superadmin" element={<ProtectedRoute><SuperAdminDashboard /></ProtectedRoute>} />
+      <Route path="/superadmin/plans" element={<ProtectedRoute><Plans /></ProtectedRoute>} />
+      <Route path="/superadmin/coupons" element={<ProtectedRoute><Coupons /></ProtectedRoute>} />
+      <Route path="/superadmin/nfc" element={<ProtectedRoute><NfcKitsAdmin /></ProtectedRoute>} />
+      <Route path="/superadmin/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
+      <Route path="/superadmin/categories" element={<ProtectedRoute><MarketplaceCategoriesAdmin /></ProtectedRoute>} />
+      <Route path="/superadmin/finance" element={<ProtectedRoute><SuperAdminFinance /></ProtectedRoute>} />
+      <Route path="/superadmin/tutorials" element={<ProtectedRoute><Tutorials /></ProtectedRoute>} />
+      <Route path="/superadmin/helpdesk" element={<ProtectedRoute><HelpdeskAgentsAdmin /></ProtectedRoute>} />
+      <Route path="/superadmin/whatsapp" element={<ProtectedRoute><WhatsAppTemplates /></ProtectedRoute>} />
+      <Route path="/helpdesk" element={<ProtectedRoute><HelpdeskWorkspace /></ProtectedRoute>} />
+      
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+};
+
+function App() {
+  return (
+    <AppProvider>
+      <HashRouter>
+        <AppContent />
+      </HashRouter>
+    </AppProvider>
+  );
+}
+
+export default App;

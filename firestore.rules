@@ -1,0 +1,379 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email == "leooliveira0630@gmail.com") ||
+        (request.auth.uid == "Ma8AYRpvAIRAydfQ7D93pI30zsQ2") ||
+        (userExists() && getUserData().get('role', 'USER') == 'SUPER_ADMIN')
+      );
+    }
+    
+    function hasPermission(perm) {
+      return isAuthenticated() && userExists() && getUserData().get('permissions', []).hasAny([perm]);
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && userExists() && (getUserData().get('role', 'USER') == 'ADMIN' || getUserData().get('role', 'USER') == 'SUPER_ADMIN');
+    }
+    
+    function isManager() {
+      return isAuthenticated() && userExists() && (getUserData().get('role', 'USER') == 'MANAGER' || getUserData().get('role', 'USER') == 'ADMIN' || getUserData().get('role', 'USER') == 'SUPER_ADMIN');
+    }
+
+    function belongsToOrg(orgId) {
+      return isAuthenticated() && userExists() && getUserData().get('organizationId', '') == orgId;
+    }
+
+    match /organizations/{orgId}/inventoryCategories/{categoryId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+    }
+    match /organizations/{orgId}/inventoryItems/{itemId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+    }
+    
+    match /{path=**}/inventoryItems/{itemId} {
+      allow read: if isAuthenticated();
+    }
+    
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId || 
+        isSuperAdmin() ||
+        (userExists() && getUserData().get('organizationId', '') == resource.data.get('organizationId', ''))
+      );
+      
+      allow create: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      
+      allow update: if isAuthenticated() && (
+        request.auth.uid == userId || 
+        isSuperAdmin() ||
+        (userExists() && getUserData().get('organizationId', '') == resource.data.get('organizationId', '') && isAdmin())
+      );
+      
+      allow delete: if isSuperAdmin() || (userExists() && getUserData().get('organizationId', '') == resource.data.get('organizationId', '') && (isAdmin() || hasPermission('users:manage')));
+    }
+    
+    match /organizations/{orgId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isSuperAdmin() || (belongsToOrg(orgId) && (isAdmin() || getUserData().get('role', 'USER') == 'CLIENT'));
+      allow delete: if isSuperAdmin();
+      
+      match /vouchers/{voucherId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /jobs/{jobId} {
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          (getUserData().get('role', 'USER') == 'CLIENT' && (resource.data.get('dentistId', '') == request.auth.uid || resource.data.get('dentistUserId', '') == request.auth.uid))
+        );
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          (getUserData().get('role', 'USER') == 'CLIENT' && (request.resource.data.get('dentistId', '') == request.auth.uid || request.resource.data.get('dentistUserId', '') == request.auth.uid))
+        );
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          (getUserData().get('role', 'USER') == 'CLIENT' && 
+            (resource.data.get('dentistId', '') == request.auth.uid || resource.data.get('dentistUserId', '') == request.auth.uid) && 
+            (request.resource.data.get('dentistId', '') == resource.data.get('dentistId', '') || request.resource.data.get('dentistUserId', '') == resource.data.get('dentistUserId', ''))
+          )
+        );
+        allow delete: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT')
+        );
+      }
+
+      match /commissions/{commId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT'));
+        allow write: if isAuthenticated() && (isSuperAdmin() || (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT'));
+      }
+
+      match /jobTypes/{jobTypeId} {
+        allow read: if true;
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && isAdmin())
+        );
+      }
+
+      match /ratings/{ratingId} {
+        allow read: if true;
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          belongsToOrg(orgId) ||
+          (userExists() && getUserData().get('role', 'USER') == 'CLIENT')
+        );
+      }
+
+      match /jobs/{jobId}/messages/{messageId} {
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          (resource != null && resource.data.get('senderId', '') == request.auth.uid) ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistId == request.auth.uid ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistUserId == request.auth.uid
+        );
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistId == request.auth.uid ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistUserId == request.auth.uid
+        );
+      }
+
+      match /jobs/{jobId}/caseApprovals/{approvalId} {
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistId == request.auth.uid ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistUserId == request.auth.uid
+        );
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (belongsToOrg(orgId) && getUserData().get('role', 'USER') != 'CLIENT') ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistId == request.auth.uid ||
+          get(/databases/$(database)/documents/organizations/$(orgId)/jobs/$(jobId)).data.dentistUserId == request.auth.uid
+        );
+      }
+
+      match /connections/{connId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          belongsToOrg(orgId) ||
+          (userExists() && getUserData().get('organizationId', '') == request.resource.data.get('organizationId', ''))
+        );
+      }
+
+      match /productCatalog/{itemId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+
+      match /clinicServices/{serviceId} {
+        allow read, write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+
+      match /clinicRooms/{roomId} {
+        allow read, write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+
+      match /clinicDentists/{dentistId} {
+        allow read, write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+
+      match /billingBatches/{batchId} {
+        allow read, write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+
+      match /manualDentists/{dentistId} {
+        allow read: if true;
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          belongsToOrg(orgId) ||
+          (request.auth.uid == request.resource.data.get('userId', '') && resource.data.get('email', '') == request.auth.token.email)
+        );
+      }
+
+      match /requisitions/{reqId} {
+        allow read, write: if isAuthenticated() && (
+          isSuperAdmin() ||
+          belongsToOrg(orgId) ||
+          (resource != null && resource.data.dentistId == request.auth.uid) ||
+          (request.resource != null && request.resource.data.dentistId == request.auth.uid)
+        );
+      }
+
+      match /{allSubcollections=**} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+        allow write: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(orgId));
+      }
+    }
+    
+    match /supplierOrders/{orderId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /productReviews/{reviewId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /settings/global {
+      allow read, write: if true;
+    }
+
+    match /coupons/{couponId} {
+      allow read: if isAuthenticated();
+      allow create, delete: if isSuperAdmin();
+      allow update: if isSuperAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedCount']) &&
+        request.resource.data.usedCount == resource.data.usedCount + 1
+      );
+    }
+
+    match /supplierCoupons/{couponId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        belongsToOrg(request.resource.data.organizationId)
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        belongsToOrg(resource.data.organizationId) ||
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedCount']) &&
+          request.resource.data.usedCount == resource.data.usedCount + 1
+        )
+      );
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        belongsToOrg(resource.data.organizationId)
+      );
+    }
+
+    match /nfc_kits/{kitId} {
+      allow read: if isAuthenticated();
+      allow create, delete: if isAuthenticated() && (isSuperAdmin() || isAdmin());
+      allow update: if isAuthenticated();
+      
+      match /boxes/{boxId} {
+        allow read: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated();
+      }
+    }
+
+    match /{path=**}/boxes/{boxId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /{path=**}/nfcBoxes/{boxId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /imageMetadata/{imageId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /subscriptionPlans/{planId} {
+      allow read: if true; // Allow public reading for registration
+      allow write: if isSuperAdmin();
+    }
+
+    match /tutorials/{tutorialId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || belongsToOrg(resource.data.organizationId));
+      allow write: if isSuperAdmin();
+    }
+
+    match /receipts/{receiptId} {
+      function isValidReceipt(data) {
+        return data.keys().hasAll(['organizationId', 'numero', 'clienteName', 'valorLiquido', 'referente', 'createdBy', 'createdAt', 'dtEmissao']) &&
+               data.organizationId is string &&
+               data.createdBy == request.auth.uid;
+      }
+      
+      allow read: if isAuthenticated() && (isSuperAdmin() || (belongsToOrg(resource.data.organizationId) && (isAdmin() || hasPermission('receipts:view') || hasPermission('receipts:manage') || hasPermission('receipts:create') || hasPermission('receipts:edit'))));
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (belongsToOrg(request.resource.data.organizationId) && (isAdmin() || hasPermission('receipts:manage') || hasPermission('receipts:create')) && isValidReceipt(request.resource.data))
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (belongsToOrg(resource.data.organizationId) && 
+         (isAdmin() || hasPermission('receipts:manage') || hasPermission('receipts:edit')) && 
+         (request.resource.data.organizationId == resource.data.organizationId) &&
+         isValidReceipt(request.resource.data) &&
+         request.resource.data.createdBy == resource.data.createdBy)
+      );
+      
+      allow delete: if isAuthenticated() && (isSuperAdmin() || (belongsToOrg(resource.data.organizationId) && (isAdmin() || hasPermission('receipts:manage') || hasPermission('receipts:delete'))));
+    }
+
+    match /{path=**}/requisitions/{reqId} {
+      allow read, write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (resource != null && resource.data.dentistId == request.auth.uid) ||
+        (request.resource != null && request.resource.data.dentistId == request.auth.uid) ||
+        (userExists() && (getUserData().get('role', 'USER') != 'CLIENT') && 
+          (getUserData().get('organizationId', '') == (resource != null ? resource.data.labId : request.resource.data.labId))
+        )
+      );
+    }
+
+    match /{path=**}/vouchers/{voucherId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (resource != null && resource.data.clientId == request.auth.uid) ||
+        (userExists() && getUserData().get('organizationId', '') == resource.data.organizationId)
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (userExists() && getUserData().get('organizationId', '') == resource.data.organizationId)
+      );
+    }
+
+    match /communication_channels/{channelId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || resource.data.orgId == getUserData().get('organizationId', ''));
+      allow create: if isAuthenticated() && (isSuperAdmin() || request.resource.data.orgId == getUserData().get('organizationId', ''));
+      allow update: if isAuthenticated() && (isSuperAdmin() || (resource.data.orgId == getUserData().get('organizationId', '') && request.resource.data.orgId == getUserData().get('organizationId', '')));
+      allow delete: if isAuthenticated() && (isSuperAdmin() || resource.data.orgId == getUserData().get('organizationId', ''));
+    }
+    match /message_templates/{templateId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || resource.data.orgId == getUserData().get('organizationId', '') || resource.data.orgId == 'GLOBAL');
+      allow create: if isAuthenticated() && (isSuperAdmin() || request.resource.data.orgId == getUserData().get('organizationId', ''));
+      allow update: if isAuthenticated() && (isSuperAdmin() || (resource.data.orgId == getUserData().get('organizationId', '') && request.resource.data.orgId == getUserData().get('organizationId', '')));
+      allow delete: if isAuthenticated() && (isSuperAdmin() || resource.data.orgId == getUserData().get('organizationId', ''));
+    }
+    match /message_logs/{logId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || resource.data.orgId == getUserData().get('organizationId', ''));
+      allow create: if isAuthenticated() && (isSuperAdmin() || request.resource.data.orgId == getUserData().get('organizationId', ''));
+    }
+    match /support_tickets/{ticketId} {
+      allow read, write: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (userExists() && getUserData().get('role', 'USER') == 'HELPDESK') ||
+        (resource == null) ||
+        (resource.data.userId == request.auth.uid) ||
+        (request.resource.data.userId == request.auth.uid)
+      );
+      
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (userExists() && getUserData().get('role', 'USER') == 'HELPDESK') ||
+          get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.userId == request.auth.uid
+        );
+      }
+    }
+  }
+}

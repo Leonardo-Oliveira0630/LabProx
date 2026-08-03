@@ -1,0 +1,188 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "MANAGER", "COLLABORATOR", "CLIENT", "SUPER_ADMIN"] },
+        "organizationId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "email", "role", "organizationId"]
+    },
+    "Organization": {
+      "title": "Organization",
+      "description": "Organization data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "orgType": { "type": "string", "enum": ["LAB", "CLINIC"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "orgType"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Financial receipt document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "numero": { "type": "string" },
+        "dtEmissao": { "type": "string", "format": "date-time" },
+        "clienteId": { "type": "string" },
+        "clienteName": { "type": "string" },
+        "cpfCnpj": { "type": "string" },
+        "valorLiquido": { "type": "number" },
+        "referente": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["organizationId", "numero", "clienteName", "valorLiquido", "referente", "createdBy"]
+    },
+    "Tutorial": {
+      "title": "Tutorial",
+      "description": "System tutorial guides",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "targetAudience": { "type": "string", "enum": ["LAB", "CLINIC"] },
+        "writtenContent": { "type": "string" },
+        "steps": { "type": "array" },
+        "videoUrl": { "type": "string" },
+        "videoSubtitle": { "type": "string" },
+        "orderIndex": { "type": "number" }
+      },
+      "required": ["id", "title", "category", "targetAudience"]
+    },
+    "Courier": {
+      "title": "Courier",
+      "description": "Courier/Motoboy registration data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "vehicle": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "organizationId", "name", "active"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Technical support tickets and triage",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userPhone": { "type": "string" },
+        "userRole": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "organizationName": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "ACTIVE", "RESOLVED"] },
+        "assignedAgentId": { "type": "string" },
+        "assignedAgentName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "closedAt": { "type": "string", "format": "date-time" },
+        "resolutionNote": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "userEmail", "category", "description", "status"]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Live chat message under a support ticket",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["BOT", "CLIENT", "AGENT"] },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "senderName", "senderRole", "text"]
+    },
+    "SupplierCoupon": {
+      "title": "SupplierCoupon",
+      "description": "Discount coupons offered by suppliers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "code": { "type": "string" },
+        "discountType": { "type": "string", "enum": ["PERCENTAGE", "FIXED"] },
+        "discountValue": { "type": "number" },
+        "maxUses": { "type": "number" },
+        "usedCount": { "type": "number" },
+        "active": { "type": "boolean" },
+        "applicableProductIds": { "type": "array" }
+      },
+      "required": ["organizationId", "code", "discountType", "discountValue", "usedCount", "active"]
+    }
+  },
+  "firestore": {
+    "/supplierCoupons/{couponId}": {
+      "schema": "SupplierCoupon",
+      "description": "Supplier discount coupons"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User documents"
+    },
+    "/organizations/{orgId}": {
+      "schema": "Organization",
+      "description": "Organization documents"
+    },
+    "/organizations/{orgId}/couriers/{courierId}": {
+      "schema": "Courier",
+      "description": "Couriers or motoboys registered by the lab"
+    },
+    "/organizations/{orgId}/jobs/{jobId}": {
+      "schema": "object",
+      "description": "Jobs within an organization"
+    },
+    "/organizations/{orgId}/requisitions/{requisitionId}": {
+      "schema": "object",
+      "description": "Online requisitions sent by dentists to the laboratory"
+    },
+    "/organizations/{orgId}/priceTables/{tableId}": {
+      "schema": "object",
+      "description": "Price tables for the organization"
+    },
+    "/receipts/{receiptId}": {
+      "schema": "Receipt",
+      "description": "Financial receipts"
+    },
+    "/settings/global": {
+      "schema": "object",
+      "description": "Global settings"
+    },
+    "/tutorials/{tutorialId}": {
+      "schema": "Tutorial",
+      "description": "Tutorial guides"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Technical support tickets"
+    },
+    "/support_tickets/{ticketId}/messages/{messageId}": {
+      "schema": "SupportMessage",
+      "description": "Support chat messages"
+    }
+  }
+}
